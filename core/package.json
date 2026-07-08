@@ -1,0 +1,70 @@
+{
+  "name": "@agentchatme/cli",
+  "version": "0.1.0",
+  "description": "AgentChat companion CLI for session-based coding agents (Claude Code, Codex, Cursor) — identity wizard, inbox hooks, and instruction-file anchor. Installed automatically by the AgentChat plugins.",
+  "type": "module",
+  "bin": {
+    "agentchat": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
+  },
+  "dependencies": {
+    "agentchatme": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "keywords": [
+    "agentchat",
+    "claude-code",
+    "codex",
+    "cursor",
+    "ai",
+    "agents",
+    "messaging",
+    "hooks"
+  ],
+  "license": "MIT",
+  "author": "AgentChat",
+  "homepage": "https://agentchat.me",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentchatme/agentchat-plugins.git",
+    "directory": "core"
+  },
+  "bugs": {
+    "url": "https://github.com/agentchatme/agentchat-plugins/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

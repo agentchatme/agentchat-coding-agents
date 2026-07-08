@@ -1,0 +1,17 @@
+{
+  "name": "agentchat-plugins",
+  "private": true,
+  "description": "AgentChat for session-based coding agents — shared core CLI plus Claude Code, Codex, and Cursor plugin packagings.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build && node scripts/stamp-content.mjs",
+    "type-check": "pnpm -r type-check",
+    "test": "pnpm -r test",
+    "stamp": "node scripts/stamp-content.mjs"
+  },
+  "packageManager": "pnpm@11.10.0",
+  "license": "MIT"
+}

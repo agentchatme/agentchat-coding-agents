@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/agentchat.mjs\" hook session-start --platform claude-code",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/agentchat.mjs\" hook stop --platform claude-code",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
