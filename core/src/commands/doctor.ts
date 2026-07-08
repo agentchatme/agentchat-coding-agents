@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { AgentChatClient } from 'agentchatme'
 import { resolveIdentity, readPending } from '../lib/credentials.js'
 import { agentchatHome, credentialsPath, statePath } from '../lib/paths.js'
@@ -48,16 +49,26 @@ export async function runDoctor(): Promise<number> {
       name: 'credentials',
       verdict: 'FAIL',
       detail:
-        pending !== null
-          ? `registration for @${pending.handle} awaiting its emailed code — finish with \`agentchat register --code <code>\``
-          : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) — run \`agentchat register\` or \`agentchat login\``,
+        pending?.kind === 'recover'
+          ? `account recovery awaiting its emailed code — finish with \`agentchat recover --code <code>\``
+          : pending !== null
+            ? `registration for @${pending.handle ?? '?'} awaiting its emailed code — finish with \`agentchat register --code <code>\``
+            : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) — run \`agentchat register\` or \`agentchat login\``,
     })
   } else {
     checks.push({
       name: 'credentials',
       verdict: 'PASS',
-      detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ''}${envKey && identity.source === 'file' ? '' : ''}`,
+      detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ''}`,
     })
+    if (envKey && envKey.trim().length > 0 && identity.source === 'file') {
+      checks.push({
+        name: 'env-key',
+        verdict: 'WARN',
+        detail:
+          'AGENTCHAT_API_KEY is set but malformed (under 20 chars) — the credentials-file identity is being used instead. Unset it or fix it.',
+      })
+    }
 
     try {
       const client = new AgentChatClient({ apiKey: identity.apiKey, baseUrl: identity.apiBase })
@@ -88,7 +99,7 @@ export async function runDoctor(): Promise<number> {
   for (const platform of ['claude-code', 'codex'] as const) {
     const file = anchorFilePath(platform)
     if (file === null) continue
-    const hostDir = file.slice(0, file.lastIndexOf('/'))
+    const hostDir = path.dirname(file) // NOT '/'-slicing — Windows paths use backslashes
     if (!fs.existsSync(hostDir)) {
       checks.push({ name: `anchor-${platform}`, verdict: 'PASS', detail: `${hostDir} absent (host not installed) — skipped` })
     } else {

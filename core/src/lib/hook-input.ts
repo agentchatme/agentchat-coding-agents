@@ -3,15 +3,15 @@ import { log } from './log.js'
 // ─── Hook stdin parsing ─────────────────────────────────────────────────────
 //
 // Every host pipes a JSON event object to the hook on stdin. We only need
-// two things from it — a session identifier (for the continuation cap) and
-// the host's own loop guard if present — and we must never fail if the
-// shape surprises us: a hook that dies on parse breaks every session.
+// a session identifier (for the continuation cap) and the session-start
+// `source` (to ignore compaction), and we must never fail if the shape
+// surprises us: a hook that dies on parse breaks every session.
 
 export interface HookInput {
   sessionId: string
-  /** Claude Code sets stop_hook_active when a turn was already continued
-   *  by a Stop hook — honored as a host-side loop guard alongside ours. */
-  stopHookActive: boolean
+  /** Claude Code SessionStart source: startup | resume | clear | compact.
+   *  Undefined on other hosts/events. */
+  source: string | undefined
 }
 
 export async function readHookInput(stream: NodeJS.ReadStream = process.stdin): Promise<HookInput> {
@@ -43,9 +43,9 @@ export async function readHookInput(stream: NodeJS.ReadStream = process.stdin): 
 
   const sessionId =
     firstString(parsed, ['session_id', 'sessionId', 'thread_id', 'conversation_id']) ?? 'unknown'
-  const stopHookActive = parsed['stop_hook_active'] === true
+  const source = firstString(parsed, ['source']) ?? undefined
 
-  return { sessionId, stopHookActive }
+  return { sessionId, source }
 }
 
 function firstString(obj: Record<string, unknown>, keys: string[]): string | null {

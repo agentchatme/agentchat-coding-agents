@@ -538,8 +538,8 @@ function getErrorMap() {
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path4, errorMaps, issueData } = params;
-  const fullPath = [...path4, ...issueData.path || []];
+  const { data, path: path6, errorMaps, issueData } = params;
+  const fullPath = [...path6, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -655,11 +655,11 @@ var errorUtil;
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path4, key) {
+  constructor(parent, value, path6, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path4;
+    this._path = path6;
     this._key = key;
   }
   get path() {
@@ -4167,6 +4167,11 @@ function resolveIdentity() {
       source: "env"
     };
   }
+  if (envKey && envKey.trim().length > 0 && file) {
+    log.warn(
+      "AGENTCHAT_API_KEY is set but malformed (under 20 chars); using the credentials-file identity instead"
+    );
+  }
   if (file) {
     return {
       apiKey: file.api_key,
@@ -4246,8 +4251,8 @@ async function readHookInput(stream = process.stdin) {
     }
   }
   const sessionId = firstString(parsed, ["session_id", "sessionId", "thread_id", "conversation_id"]) ?? "unknown";
-  const stopHookActive = parsed["stop_hook_active"] === true;
-  return { sessionId, stopHookActive };
+  const source = firstString(parsed, ["source"]) ?? void 0;
+  return { sessionId, source };
 }
 function firstString(obj, keys) {
   for (const key of keys) {
@@ -4333,7 +4338,7 @@ var SyncRowSchema = external_exports.object({
 }).passthrough();
 var DEFAULT_TIMEOUT_MS = 4e3;
 async function request(cfg, method, pathname, body) {
-  const url = new URL(pathname, cfg.apiBase);
+  const url = cfg.apiBase.replace(/\/+$/, "") + pathname;
   const res = await fetch(url, {
     method,
     headers: {
@@ -4368,10 +4373,15 @@ async function syncPeek(cfg, opts = {}) {
     return [];
   }
   const rows = [];
-  for (const item of data) {
+  for (const [index, item] of data.entries()) {
     const parsed = SyncRowSchema.safeParse(item);
-    if (parsed.success) rows.push(parsed.data);
-    else log.debug("skipping sync row that failed schema parse");
+    if (!parsed.success) {
+      log.warn(
+        `sync row ${index} failed schema parse \u2014 processing the ${rows.length}-row prefix only`
+      );
+      break;
+    }
+    rows.push(parsed.data);
   }
   return rows;
 }
@@ -4440,7 +4450,8 @@ function digestLines(digests) {
 function formatSessionStart(handle, rows) {
   const digests = digestConversations(rows);
   const total = rows.length;
-  const header = `You are @${handle} on AgentChat. ${total} unread message${total === 1 ? "" : "s"} in ${digests.length} conversation${digests.length === 1 ? "" : "s"}:`;
+  const identity = handle ? `You are @${handle} on AgentChat. ` : "AgentChat: ";
+  const header = identity + `${total} unread message${total === 1 ? "" : "s"} in ${digests.length} conversation${digests.length === 1 ? "" : "s"}:`;
   return [
     header,
     "",
@@ -4452,22 +4463,24 @@ function formatSessionStart(handle, rows) {
 function formatStopPickup(handle, rows) {
   const digests = digestConversations(rows);
   const total = rows.length;
+  const addressee = handle ? ` for @${handle}` : "";
   return [
-    `While you were working, ${total} AgentChat message${total === 1 ? "" : "s"} arrived for @${handle}:`,
+    `While you were working, ${total} AgentChat message${total === 1 ? "" : "s"} arrived${addressee}:`,
     "",
     ...digestLines(digests),
     "",
     "Handle these per your AgentChat skill, then finish. Reply via agentchat_send_message only where warranted \u2014 if nothing is actionable, simply end the turn (silence is a valid outcome)."
   ].join("\n");
 }
-function formatRegistrationOffer() {
+function formatRegistrationOffer(cliPath) {
+  const invoke = cliPath ? `node "${cliPath}"` : "agentchat";
   return [
     "The AgentChat plugin is installed but this machine has no AgentChat identity yet.",
     "",
     "AgentChat gives you (the agent) a handle other agents can DM, like a phone number. If the user would like that, offer to set it up conversationally:",
     "1. Ask for the email + desired handle (3\u201330 chars, lowercase letters/digits/hyphens, must start with a letter).",
-    "2. Run: agentchat register --email <email> --handle <handle>",
-    "3. A 6-digit code lands in their email; ask for it, then run: agentchat register --code <code>",
+    `2. Run: ${invoke} register --email <email> --handle <handle>`,
+    `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register --code <code>`,
     "",
     "Do not push \u2014 one short offer is plenty. If declined, drop the topic for the rest of the session."
   ].join("\n");
@@ -4492,26 +4505,35 @@ function printJson(payload) {
 async function resolveHandle(cfg, cachedHandle) {
   if (cachedHandle) return cachedHandle;
   const me = await getMeLite(cfg);
-  return me?.handle ?? "your-agentchat-handle";
+  return me?.handle ?? null;
+}
+function ackableRows(rows) {
+  const usable = rows.filter((r) => typeof r.delivery_id === "string" && r.delivery_id.length > 0);
+  if (usable.length < rows.length) {
+    log.warn(`${rows.length - usable.length} sync row(s) without delivery_id excluded from digest`);
+  }
+  return usable;
 }
 async function runSessionStartHook(platform) {
   try {
     if (hooksDisabled()) return;
     const input = await readHookInput();
+    if (input.source === "compact") return;
     resetSession(`${platform}:${input.sessionId}`);
     const identity = resolveIdentity();
     if (identity === null) {
       if (shouldOfferRegistration()) {
         recordRegistrationOffer();
-        printJson(sessionStartOutput(platform, formatRegistrationOffer()));
+        printJson(sessionStartOutput(platform, formatRegistrationOffer(process.argv[1])));
       }
       return;
     }
     const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
-    const rows = await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT });
+    const rows = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }));
     if (rows.length === 0) return;
     const handle = await resolveHandle(cfg, identity.handle);
     const context = formatSessionStart(handle, rows);
+    printJson(sessionStartOutput(platform, context));
     const cursor = lastDeliveryId(rows);
     if (cursor !== null) {
       try {
@@ -4520,7 +4542,6 @@ async function runSessionStartHook(platform) {
         log.warn(`session-start ack failed (will re-surface next session): ${String(err)}`);
       }
     }
-    printJson(sessionStartOutput(platform, context));
   } catch (err) {
     log.warn(`session-start hook degraded to no-op: ${String(err)}`);
   }
@@ -4538,11 +4559,12 @@ async function runStopHook(platform) {
       return;
     }
     const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
-    const rows = await syncPeek(cfg, { limit: STOP_PEEK_LIMIT });
+    const rows = ackableRows(await syncPeek(cfg, { limit: STOP_PEEK_LIMIT }));
     if (rows.length === 0) return;
     recordContinuation(sessionKey);
     const handle = await resolveHandle(cfg, identity.handle);
     const reason = formatStopPickup(handle, rows);
+    printJson(stopOutput(platform, reason));
     const cursor = lastDeliveryId(rows);
     if (cursor !== null) {
       try {
@@ -4551,7 +4573,6 @@ async function runStopHook(platform) {
         log.warn(`stop ack failed (messages stay queued): ${String(err)}`);
       }
     }
-    printJson(stopOutput(platform, reason));
   } catch (err) {
     log.warn(`stop hook degraded to no-op: ${String(err)}`);
   }
@@ -4559,6 +4580,7 @@ async function runStopHook(platform) {
 
 // src/commands/identity.ts
 import * as fs4 from "fs";
+import * as path4 from "path";
 import * as readline from "readline/promises";
 
 // ../node_modules/.pnpm/agentchatme@1.0.2/node_modules/agentchatme/dist/index.js
@@ -4821,8 +4843,8 @@ var HttpTransport = class {
     }
     this.fetchFn = f.bind(globalThis);
   }
-  async request(method, path4, opts = {}) {
-    const url = `${this.baseUrl}${path4}`;
+  async request(method, path6, opts = {}) {
+    const url = `${this.baseUrl}${path6}`;
     const policy = resolveRetryPolicy(opts.retry, this.retry);
     const canRetry = isRetryEligible(method, opts.idempotencyKey, opts.retry);
     const maxAttempts = canRetry ? policy.maxRetries + 1 : 1;
@@ -5141,31 +5163,31 @@ var AgentChatClient = class _AgentChatClient {
     this.onBacklogWarning = options.onBacklogWarning;
   }
   // ─── Internal request helpers ─────────────────────────────────────────────
-  async get(path4, opts) {
-    const res = await this.http.request("GET", path4, this.toRequestOpts(opts));
+  async get(path6, opts) {
+    const res = await this.http.request("GET", path6, this.toRequestOpts(opts));
     return res.data;
   }
-  async del(path4, opts) {
-    const res = await this.http.request("DELETE", path4, this.toRequestOpts(opts));
+  async del(path6, opts) {
+    const res = await this.http.request("DELETE", path6, this.toRequestOpts(opts));
     return res.data;
   }
-  async post(path4, body, opts) {
-    const res = await this.http.request("POST", path4, {
+  async post(path6, body, opts) {
+    const res = await this.http.request("POST", path6, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async patch(path4, body, opts) {
-    const res = await this.http.request("PATCH", path4, {
+  async patch(path6, body, opts) {
+    const res = await this.http.request("PATCH", path6, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async put(path4, body, opts) {
+  async put(path6, body, opts) {
     const headers = opts?.contentType ? { "Content-Type": opts.contentType } : void 0;
-    const res = await this.http.request("PUT", path4, {
+    const res = await this.http.request("PUT", path6, {
       ...this.toRequestOpts(opts),
       body,
       rawBody: opts?.rawBody,
@@ -5889,38 +5911,52 @@ function removeAnchor(platform) {
 function hasAnchor(platform) {
   const filePath = anchorFilePath(platform);
   if (filePath === null || !fs3.existsSync(filePath)) return false;
-  return fs3.readFileSync(filePath, "utf-8").includes(ANCHOR_START);
+  const content = fs3.readFileSync(filePath, "utf-8");
+  return findBlock(content, ANCHOR_START, ANCHOR_END) !== null;
+}
+function lineAnchoredIndex(text, marker, fromIndex = 0) {
+  let idx = text.indexOf(marker, fromIndex);
+  while (idx >= 0) {
+    const lineStart = text.lastIndexOf("\n", idx - 1) + 1;
+    const lineEndRaw = text.indexOf("\n", idx);
+    const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw;
+    if (text.slice(lineStart, lineEnd).trim() === marker) {
+      return { start: lineStart, end: lineEnd };
+    }
+    idx = text.indexOf(marker, idx + marker.length);
+  }
+  return null;
+}
+function findBlock(text, startMarker, endMarker) {
+  const start = lineAnchoredIndex(text, startMarker);
+  if (start === null) return null;
+  const end = lineAnchoredIndex(text, endMarker, start.end);
+  if (end === null) return null;
+  return { from: start.start, to: end.end };
 }
 function upsertAnchorBlock(existing, block) {
-  const cleaned = stripBlockBetween(existing, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END);
-  const startIdx = cleaned.indexOf(ANCHOR_START);
-  const endIdx = cleaned.indexOf(ANCHOR_END);
-  if (startIdx >= 0 && endIdx >= 0 && endIdx > startIdx) {
-    const before = cleaned.slice(0, startIdx).replace(/\n+$/, "");
-    const after = cleaned.slice(endIdx + ANCHOR_END.length).replace(/^\n+/, "");
-    const parts = [before, block, after].filter((s) => s.length > 0);
-    return parts.join("\n\n") + "\n";
-  }
+  const cleaned = stripAnchorBlock(existing);
   const trimmed = cleaned.replace(/\n+$/, "");
   if (trimmed.length === 0) return block + "\n";
   return trimmed + "\n\n" + block + "\n";
 }
 function stripAnchorBlock(existing) {
-  const afterUnified = stripBlockBetween(existing, ANCHOR_START, ANCHOR_END);
-  return stripBlockBetween(afterUnified, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END);
+  const afterUnified = stripAllBlocks(existing, ANCHOR_START, ANCHOR_END);
+  return stripAllBlocks(afterUnified, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END);
 }
-function stripBlockBetween(existing, start, end) {
-  const startIdx = existing.indexOf(start);
-  const endIdx = existing.indexOf(end);
-  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
-    return existing;
+function stripAllBlocks(existing, start, end) {
+  let text = existing;
+  for (let i = 0; i < 1e4; i++) {
+    const block = findBlock(text, start, end);
+    if (block === null) return text;
+    const before = text.slice(0, block.from).replace(/\n+$/, "");
+    const after = text.slice(block.to).replace(/^\n+/, "");
+    if (before.length === 0 && after.length === 0) return "";
+    if (before.length === 0) text = after.endsWith("\n") ? after : after + "\n";
+    else if (after.length === 0) text = before + "\n";
+    else text = before + "\n\n" + after + (after.endsWith("\n") ? "" : "\n");
   }
-  const before = existing.slice(0, startIdx).replace(/\n+$/, "");
-  const after = existing.slice(endIdx + end.length).replace(/^\n+/, "");
-  if (before.length === 0 && after.length === 0) return "";
-  if (before.length === 0) return after.endsWith("\n") ? after : after + "\n";
-  if (after.length === 0) return before + "\n";
-  return before + "\n\n" + after + (after.endsWith("\n") ? "" : "\n");
+  return text;
 }
 
 // src/commands/identity.ts
@@ -5933,7 +5969,7 @@ function describeApiError(err) {
     case "HANDLE_TAKEN":
       return "That handle is already taken \u2014 pick another and re-run.";
     case "EMAIL_TAKEN":
-      return "This email already has an active agent. Use `agentchat login` with its key, or recover it via the dashboard.";
+      return "This email already has an active agent. Use `agentchat login` with its key, or `agentchat recover --email <email>` to re-key it.";
     case "EMAIL_EXHAUSTED":
       return "This email has used its lifetime maximum of 3 registrations.";
     case "INVALID_HANDLE":
@@ -5964,7 +6000,7 @@ function autoAnchor(handle) {
   for (const platform of candidates) {
     const file = anchorFilePath(platform);
     if (file === null) continue;
-    const hostDir = file.slice(0, file.lastIndexOf("/"));
+    const hostDir = path4.dirname(file);
     if (!fs4.existsSync(hostDir)) continue;
     try {
       const result = installAnchor(platform, handle);
@@ -6030,6 +6066,13 @@ async function runRegister(opts) {
   if (resolveIdentity() !== null) {
     console.error(
       "This machine already has an AgentChat identity (see `agentchat status`). Run `agentchat logout` first to replace it."
+    );
+    return 1;
+  }
+  const inFlight = readPending();
+  if (inFlight?.kind === "recover") {
+    console.error(
+      "An account recovery is in progress \u2014 finish it with `agentchat recover --code <code>`, or discard it with `agentchat logout` before registering."
     );
     return 1;
   }
@@ -6200,10 +6243,16 @@ async function runStatus(opts) {
   const pending = readPending();
   if (identity === null) {
     if (opts.json) {
-      console.log(JSON.stringify({ configured: false, pending: pending !== null }));
+      console.log(
+        JSON.stringify({ configured: false, pending: pending !== null, pending_kind: pending?.kind ?? null })
+      );
+    } else if (pending?.kind === "recover") {
+      console.log(
+        "No identity yet, but an account recovery is waiting on its emailed code \u2014 finish with: agentchat recover --code <code>"
+      );
     } else if (pending !== null) {
       console.log(
-        `No identity yet, but a registration for @${pending.handle} is waiting on its emailed code \u2014 finish with: agentchat register --code <code>`
+        `No identity yet, but a registration for @${pending.handle ?? "?"} is waiting on its emailed code \u2014 finish with: agentchat register --code <code>`
       );
     } else {
       console.log("No AgentChat identity on this machine. Set one up with: agentchat register");
@@ -6273,6 +6322,7 @@ function runLogout() {
 
 // src/commands/doctor.ts
 import * as fs5 from "fs";
+import * as path5 from "path";
 
 // src/version.ts
 var VERSION2 = "0.1.0";
@@ -6299,14 +6349,21 @@ async function runDoctor() {
     checks.push({
       name: "credentials",
       verdict: "FAIL",
-      detail: pending !== null ? `registration for @${pending.handle} awaiting its emailed code \u2014 finish with \`agentchat register --code <code>\`` : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) \u2014 run \`agentchat register\` or \`agentchat login\``
+      detail: pending?.kind === "recover" ? `account recovery awaiting its emailed code \u2014 finish with \`agentchat recover --code <code>\`` : pending !== null ? `registration for @${pending.handle ?? "?"} awaiting its emailed code \u2014 finish with \`agentchat register --code <code>\`` : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) \u2014 run \`agentchat register\` or \`agentchat login\``
     });
   } else {
     checks.push({
       name: "credentials",
       verdict: "PASS",
-      detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ""}${envKey && identity.source === "file" ? "" : ""}`
+      detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ""}`
     });
+    if (envKey && envKey.trim().length > 0 && identity.source === "file") {
+      checks.push({
+        name: "env-key",
+        verdict: "WARN",
+        detail: "AGENTCHAT_API_KEY is set but malformed (under 20 chars) \u2014 the credentials-file identity is being used instead. Unset it or fix it."
+      });
+    }
     try {
       const client = new AgentChatClient({ apiKey: identity.apiKey, baseUrl: identity.apiBase });
       const started = Date.now();
@@ -6334,7 +6391,7 @@ async function runDoctor() {
   for (const platform of ["claude-code", "codex"]) {
     const file = anchorFilePath(platform);
     if (file === null) continue;
-    const hostDir = file.slice(0, file.lastIndexOf("/"));
+    const hostDir = path5.dirname(file);
     if (!fs5.existsSync(hostDir)) {
       checks.push({ name: `anchor-${platform}`, verdict: "PASS", detail: `${hostDir} absent (host not installed) \u2014 skipped` });
     } else {

@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import * as readline from 'node:readline/promises'
 import { AgentChatClient } from 'agentchatme'
 import {
@@ -52,7 +53,7 @@ function describeApiError(err: unknown): string {
     case 'HANDLE_TAKEN':
       return 'That handle is already taken — pick another and re-run.'
     case 'EMAIL_TAKEN':
-      return 'This email already has an active agent. Use `agentchat login` with its key, or recover it via the dashboard.'
+      return 'This email already has an active agent. Use `agentchat login` with its key, or `agentchat recover --email <email>` to re-key it.'
     case 'EMAIL_EXHAUSTED':
       return 'This email has used its lifetime maximum of 3 registrations.'
     case 'INVALID_HANDLE':
@@ -91,7 +92,7 @@ function autoAnchor(handle: string): string[] {
   for (const platform of candidates) {
     const file = anchorFilePath(platform)
     if (file === null) continue
-    const hostDir = file.slice(0, file.lastIndexOf('/'))
+    const hostDir = path.dirname(file) // NOT '/'-slicing — Windows paths use backslashes
     if (!fs.existsSync(hostDir)) continue
     try {
       const result = installAnchor(platform, handle)
@@ -162,6 +163,13 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
   if (resolveIdentity() !== null) {
     console.error(
       'This machine already has an AgentChat identity (see `agentchat status`). Run `agentchat logout` first to replace it.',
+    )
+    return 1
+  }
+  const inFlight = readPending()
+  if (inFlight?.kind === 'recover') {
+    console.error(
+      'An account recovery is in progress — finish it with `agentchat recover --code <code>`, or discard it with `agentchat logout` before registering.',
     )
     return 1
   }
@@ -355,10 +363,16 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
 
   if (identity === null) {
     if (opts.json) {
-      console.log(JSON.stringify({ configured: false, pending: pending !== null }))
+      console.log(
+        JSON.stringify({ configured: false, pending: pending !== null, pending_kind: pending?.kind ?? null }),
+      )
+    } else if (pending?.kind === 'recover') {
+      console.log(
+        'No identity yet, but an account recovery is waiting on its emailed code — finish with: agentchat recover --code <code>',
+      )
     } else if (pending !== null) {
       console.log(
-        `No identity yet, but a registration for @${pending.handle} is waiting on its emailed code — finish with: agentchat register --code <code>`,
+        `No identity yet, but a registration for @${pending.handle ?? '?'} is waiting on its emailed code — finish with: agentchat register --code <code>`,
       )
     } else {
       console.log('No AgentChat identity on this machine. Set one up with: agentchat register')

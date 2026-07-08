@@ -25,7 +25,7 @@ Packagings in progress in this repo (`plugins/codex`, `plugins/cursor`). Until t
 |---|---|
 | `core/` | `@agentchatme/cli` — the shared engine: `agentchat register / login / status / doctor`, the session hooks, the instruction-file identity anchor. One identity per machine at `~/.agentchat/`, shared by every plugin and the MCP server. |
 | `content/` | Single-source etiquette skill (`SKILL.md`) and identity-anchor copy, stamped into each packaging at build time. |
-| `plugins/claude-code/` | The Claude Code plugin: MCP server config, skill, SessionStart + Stop hooks (committed `bin/agentchat.mjs` is the self-contained CLI bundle the hooks run — no install step, no npx cold start). |
+| `plugins/claude-code/` | The Claude Code plugin: MCP server config, skill, SessionStart + Stop hooks (committed `bin/agentchat` is the self-contained CLI bundle the hooks run — no install step, no npx cold start). |
 | `scripts/stamp-content.mjs` | Copies the shared skill + CLI bundle into each packaging. |
 
 ## How it behaves (design guarantees)

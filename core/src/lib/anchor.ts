@@ -100,41 +100,72 @@ export function removeAnchor(platform: Platform): AnchorResult {
 export function hasAnchor(platform: Platform): boolean {
   const filePath = anchorFilePath(platform)
   if (filePath === null || !fs.existsSync(filePath)) return false
-  return fs.readFileSync(filePath, 'utf-8').includes(ANCHOR_START)
+  const content = fs.readFileSync(filePath, 'utf-8')
+  return findBlock(content, ANCHOR_START, ANCHOR_END) !== null
+}
+
+// Markers only count when they are a whole line — a marker quoted inside
+// user prose ("the plugin uses <!-- agentchat:start --> fences") must never
+// be treated as a fence, or the upsert would eat the user's content between
+// the quote and the real block.
+function lineAnchoredIndex(
+  text: string,
+  marker: string,
+  fromIndex = 0,
+): { start: number; end: number } | null {
+  let idx = text.indexOf(marker, fromIndex)
+  while (idx >= 0) {
+    const lineStart = text.lastIndexOf('\n', idx - 1) + 1
+    const lineEndRaw = text.indexOf('\n', idx)
+    const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw
+    if (text.slice(lineStart, lineEnd).trim() === marker) {
+      return { start: lineStart, end: lineEnd }
+    }
+    idx = text.indexOf(marker, idx + marker.length)
+  }
+  return null
+}
+
+function findBlock(
+  text: string,
+  startMarker: string,
+  endMarker: string,
+): { from: number; to: number } | null {
+  const start = lineAnchoredIndex(text, startMarker)
+  if (start === null) return null
+  const end = lineAnchoredIndex(text, endMarker, start.end)
+  if (end === null) return null
+  return { from: start.start, to: end.end }
 }
 
 export function upsertAnchorBlock(existing: string, block: string): string {
-  const cleaned = stripBlockBetween(existing, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END)
-
-  const startIdx = cleaned.indexOf(ANCHOR_START)
-  const endIdx = cleaned.indexOf(ANCHOR_END)
-  if (startIdx >= 0 && endIdx >= 0 && endIdx > startIdx) {
-    const before = cleaned.slice(0, startIdx).replace(/\n+$/, '')
-    const after = cleaned.slice(endIdx + ANCHOR_END.length).replace(/^\n+/, '')
-    const parts = [before, block, after].filter((s) => s.length > 0)
-    return parts.join('\n\n') + '\n'
-  }
-
+  // Strip every existing block (unified AND legacy) first, then append the
+  // fresh one — replacement and dedup in one motion, so a file that somehow
+  // accumulated multiple blocks converges back to exactly one.
+  const cleaned = stripAnchorBlock(existing)
   const trimmed = cleaned.replace(/\n+$/, '')
   if (trimmed.length === 0) return block + '\n'
   return trimmed + '\n\n' + block + '\n'
 }
 
 export function stripAnchorBlock(existing: string): string {
-  const afterUnified = stripBlockBetween(existing, ANCHOR_START, ANCHOR_END)
-  return stripBlockBetween(afterUnified, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END)
+  const afterUnified = stripAllBlocks(existing, ANCHOR_START, ANCHOR_END)
+  return stripAllBlocks(afterUnified, LEGACY_ANCHOR_START, LEGACY_ANCHOR_END)
 }
 
-function stripBlockBetween(existing: string, start: string, end: string): string {
-  const startIdx = existing.indexOf(start)
-  const endIdx = existing.indexOf(end)
-  if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
-    return existing
+function stripAllBlocks(existing: string, start: string, end: string): string {
+  let text = existing
+  // Bounded loop: each pass removes one block; a file can't hold more
+  // blocks than lines.
+  for (let i = 0; i < 10_000; i++) {
+    const block = findBlock(text, start, end)
+    if (block === null) return text
+    const before = text.slice(0, block.from).replace(/\n+$/, '')
+    const after = text.slice(block.to).replace(/^\n+/, '')
+    if (before.length === 0 && after.length === 0) return ''
+    if (before.length === 0) text = after.endsWith('\n') ? after : after + '\n'
+    else if (after.length === 0) text = before + '\n'
+    else text = before + '\n\n' + after + (after.endsWith('\n') ? '' : '\n')
   }
-  const before = existing.slice(0, startIdx).replace(/\n+$/, '')
-  const after = existing.slice(endIdx + end.length).replace(/^\n+/, '')
-  if (before.length === 0 && after.length === 0) return ''
-  if (before.length === 0) return after.endsWith('\n') ? after : after + '\n'
-  if (after.length === 0) return before + '\n'
-  return before + '\n\n' + after + (after.endsWith('\n') ? '' : '\n')
+  return text
 }

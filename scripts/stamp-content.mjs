@@ -33,11 +33,17 @@ for (const dir of PLUGIN_DIRS) {
   fs.mkdirSync(path.dirname(skillDest), { recursive: true })
   fs.copyFileSync(skillSource, skillDest)
 
-  const binDest = path.join(pluginRoot, 'bin', 'agentchat.mjs')
+  // Extensionless + executable so that a PATH exposure of the plugin's bin/
+  // gives users the literal `agentchat` command every piece of copy names.
+  // (Hooks invoke it via `node` + absolute path either way.)
+  const binDest = path.join(pluginRoot, 'bin', 'agentchat')
   fs.mkdirSync(path.dirname(binDest), { recursive: true })
   fs.copyFileSync(cliBundle, binDest)
+  fs.chmodSync(binDest, 0o755)
+  const legacyBin = path.join(pluginRoot, 'bin', 'agentchat.mjs')
+  if (fs.existsSync(legacyBin)) fs.unlinkSync(legacyBin)
 
-  console.log(`stamp: ${dir} ← SKILL.md, bin/agentchat.mjs`)
+  console.log(`stamp: ${dir} ← SKILL.md, bin/agentchat`)
   stamped++
 }
 

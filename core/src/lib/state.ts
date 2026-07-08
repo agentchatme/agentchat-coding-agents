@@ -8,6 +8,13 @@ import { statePath } from './paths.js'
 // agents DMing each other could keep their sessions alive indefinitely.
 // State is keyed by `${platform}:${session_id}` and pruned after 48h so
 // the file never grows past a screenful.
+//
+// Concurrency note: read-modify-write here is not atomic across processes.
+// One session's own hooks are serialized by the host, so the cap holds
+// where it matters; concurrent hooks from SEPARATE sessions can lose each
+// other's counter updates, which at worst leaks a few extra continuations
+// (each still bounded by its own session's cap). Accepted — an flock would
+// buy little and cost a platform-specific dependency.
 
 const SESSION_TTL_MS = 48 * 60 * 60 * 1000
 

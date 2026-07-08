@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import { z } from 'zod'
 import { atomicWriteFile, readJsonFile } from './fsutil.js'
+import { log } from './log.js'
 import { credentialsPath, pendingPath } from './paths.js'
 
 // ─── Identity resolution ────────────────────────────────────────────────────
@@ -48,6 +49,14 @@ export function resolveIdentity(): ResolvedIdentity | null {
       handle: file?.handle ?? null,
       source: 'env',
     }
+  }
+
+  // A SET-but-malformed env key silently losing to the file would be an
+  // unnoticed identity swap on a messaging platform — say it on stderr.
+  if (envKey && envKey.trim().length > 0 && file) {
+    log.warn(
+      'AGENTCHAT_API_KEY is set but malformed (under 20 chars); using the credentials-file identity instead',
+    )
   }
 
   if (file) {

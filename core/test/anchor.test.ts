@@ -68,6 +68,43 @@ describe('upsertAnchorBlock', () => {
     expect(next).not.toContain('old stuff')
     expect(next).toContain('@fresh')
   })
+
+  it('ignores markers quoted inside user prose — never eats the content after them', () => {
+    const existing = [
+      'My notes: the plugin fences its block with <!-- agentchat:start --> markers.',
+      '',
+      'IMPORTANT USER CONTENT HERE',
+      '',
+      renderAnchorBlock('old-handle'),
+      '',
+    ].join('\n')
+    const next = upsertAnchorBlock(existing, renderAnchorBlock('new-handle'))
+    expect(next).toContain('IMPORTANT USER CONTENT HERE')
+    expect(next).toContain('the plugin fences its block')
+    expect(next).toContain('@new-handle')
+    expect(next).not.toContain('@old-handle')
+    const stripped = stripAnchorBlock(next)
+    expect(stripped).toContain('IMPORTANT USER CONTENT HERE')
+    expect(stripped).not.toContain('@new-handle')
+  })
+
+  it('does not accumulate blocks when the file contains mangled (reversed) markers', () => {
+    const mangled = `${ANCHOR_END}\nweird leftover\n`
+    const once = upsertAnchorBlock(mangled, renderAnchorBlock('a'))
+    const twice = upsertAnchorBlock(once, renderAnchorBlock('b'))
+    const thrice = upsertAnchorBlock(twice, renderAnchorBlock('c'))
+    expect(thrice.match(new RegExp(ANCHOR_START, 'g'))?.length ?? 0).toBeLessThanOrEqual(1)
+    expect(thrice).toContain('@c')
+    expect(thrice).not.toContain('@a')
+    expect(thrice).not.toContain('@b')
+  })
+
+  it('converges a file that somehow holds multiple well-formed blocks back to one', () => {
+    const doubled = [renderAnchorBlock('one'), '', renderAnchorBlock('two'), ''].join('\n')
+    const next = upsertAnchorBlock(doubled, renderAnchorBlock('final'))
+    expect(next.match(new RegExp(ANCHOR_START, 'g'))).toHaveLength(1)
+    expect(next).toContain('@final')
+  })
 })
 
 describe('stripAnchorBlock', () => {

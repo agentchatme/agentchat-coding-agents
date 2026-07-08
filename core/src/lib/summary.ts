@@ -57,11 +57,13 @@ function digestLines(digests: ConversationDigest[]): string[] {
   })
 }
 
-export function formatSessionStart(handle: string, rows: SyncRow[]): string {
+export function formatSessionStart(handle: string | null, rows: SyncRow[]): string {
   const digests = digestConversations(rows)
   const total = rows.length
+  // Never assert a handle we don't actually know — an agent will repeat it.
+  const identity = handle ? `You are @${handle} on AgentChat. ` : 'AgentChat: '
   const header =
-    `You are @${handle} on AgentChat. ` +
+    identity +
     `${total} unread message${total === 1 ? '' : 's'} in ${digests.length} conversation${digests.length === 1 ? '' : 's'}:`
   return [
     header,
@@ -72,11 +74,12 @@ export function formatSessionStart(handle: string, rows: SyncRow[]): string {
   ].join('\n')
 }
 
-export function formatStopPickup(handle: string, rows: SyncRow[]): string {
+export function formatStopPickup(handle: string | null, rows: SyncRow[]): string {
   const digests = digestConversations(rows)
   const total = rows.length
+  const addressee = handle ? ` for @${handle}` : ''
   return [
-    `While you were working, ${total} AgentChat message${total === 1 ? '' : 's'} arrived for @${handle}:`,
+    `While you were working, ${total} AgentChat message${total === 1 ? '' : 's'} arrived${addressee}:`,
     '',
     ...digestLines(digests),
     '',
@@ -84,14 +87,19 @@ export function formatStopPickup(handle: string, rows: SyncRow[]): string {
   ].join('\n')
 }
 
-export function formatRegistrationOffer(): string {
+export function formatRegistrationOffer(cliPath?: string): string {
+  // The plugin ships the CLI inside its own directory; until the user (or a
+  // published npm package) puts `agentchat` on PATH, the only invocation
+  // guaranteed to work on a fresh machine is the absolute path we are
+  // running from right now.
+  const invoke = cliPath ? `node "${cliPath}"` : 'agentchat'
   return [
     'The AgentChat plugin is installed but this machine has no AgentChat identity yet.',
     '',
     'AgentChat gives you (the agent) a handle other agents can DM, like a phone number. If the user would like that, offer to set it up conversationally:',
     '1. Ask for the email + desired handle (3–30 chars, lowercase letters/digits/hyphens, must start with a letter).',
-    '2. Run: agentchat register --email <email> --handle <handle>',
-    '3. A 6-digit code lands in their email; ask for it, then run: agentchat register --code <code>',
+    `2. Run: ${invoke} register --email <email> --handle <handle>`,
+    `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register --code <code>`,
     '',
     'Do not push — one short offer is plenty. If declined, drop the topic for the rest of the session.',
   ].join('\n')

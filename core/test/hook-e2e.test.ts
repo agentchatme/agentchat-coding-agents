@@ -25,6 +25,7 @@ interface FakeApi {
   queue: Array<Record<string, unknown>>
   acks: string[]
   syncCalls: number
+  failAck: boolean
 }
 
 function makeRow(n: number, conversation = 'conv_e2e'): Record<string, unknown> {
@@ -44,6 +45,7 @@ async function startFakeApi(): Promise<FakeApi> {
     queue: [],
     acks: [],
     syncCalls: 0,
+    failAck: false,
   }
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -58,13 +60,16 @@ async function startFakeApi(): Promise<FakeApi> {
       return send(200, api.queue) // bare array — production shape
     }
     if (req.method === 'POST' && url.pathname === '/v1/messages/sync/ack') {
+      if (api.failAck) return send(500, { code: 'INTERNAL' })
       let body = ''
       req.on('data', (c) => (body += c))
       req.on('end', () => {
         const cursor = JSON.parse(body).last_delivery_id as string
         api.acks.push(cursor)
         const before = api.queue.length
-        api.queue = api.queue.filter((r) => String(r['delivery_id']) > cursor)
+        api.queue = api.queue.filter(
+          (r) => typeof r['delivery_id'] !== 'string' || String(r['delivery_id']) > cursor,
+        )
         send(200, { acked: before - api.queue.length })
       })
       return
@@ -127,6 +132,7 @@ beforeEach(() => {
   api.queue = []
   api.acks = []
   api.syncCalls = 0
+  api.failAck = false
 })
 
 describe('session-start hook e2e', () => {
@@ -169,8 +175,51 @@ describe('session-start hook e2e', () => {
     fs.rmSync(path.join(home, 'credentials'))
     const first = await runHook('session-start', 'claude-code', { session_id: 'fresh-1' })
     expect(first.stdout).toContain('no AgentChat identity yet')
+    // The instructed command must exist on a FRESH machine: absolute path
+    // to the running bundle, not a bare binary name that may not be on PATH.
+    expect(first.stdout).toContain(BIN)
     const second = await runHook('session-start', 'claude-code', { session_id: 'fresh-2' })
     expect(second.stdout).toBe('')
+  })
+
+  it('prints the digest even when the ack call fails (at-least-once, never at-most-once)', async () => {
+    api.queue = [makeRow(1)]
+    api.failAck = true
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 's-ackfail' })
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('"ping 1"')
+    expect(api.queue).toHaveLength(1) // still queued — will re-surface (duplicate beats loss)
+  })
+
+  it('stops at the first malformed sync row and never acks past it', async () => {
+    api.queue = [
+      makeRow(1),
+      { ...makeRow(2), id: 12345 }, // numeric id fails the schema
+      makeRow(3),
+    ]
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 's-prefix' })
+    const context = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(context).toContain('"ping 1"')
+    expect(context).not.toContain('ping 3')
+    expect(api.acks).toEqual([`del_${String(1).padStart(32, '0')}`])
+    expect(api.queue).toHaveLength(2) // malformed row + everything after it stay queued
+  })
+
+  it('excludes rows without a delivery cursor instead of re-injecting them forever', async () => {
+    api.queue = [{ ...makeRow(1), delivery_id: null }]
+    const first = await runHook('session-start', 'claude-code', { session_id: 's-null' })
+    expect(first.stdout).toBe('')
+    expect(api.acks).toHaveLength(0)
+  })
+
+  it('treats compaction as no event: no digest, no ack, no budget reset', async () => {
+    api.queue = [makeRow(1)]
+    const { stdout } = await runHook('session-start', 'claude-code', {
+      session_id: 's-compact',
+      source: 'compact',
+    })
+    expect(stdout).toBe('')
+    expect(api.acks).toHaveLength(0)
+    expect(api.queue).toHaveLength(1)
   })
 })
 

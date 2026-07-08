@@ -41,7 +41,11 @@ async function request(
   pathname: string,
   body?: unknown,
 ): Promise<unknown> {
-  const url = new URL(pathname, cfg.apiBase)
+  // Join by concatenation, exactly like the SDK's HttpTransport — `new URL`
+  // with an absolute pathname would clobber a path component in the base
+  // (e.g. a reverse-proxy prefix), splitting behavior between the SDK-based
+  // commands and the hooks.
+  const url = cfg.apiBase.replace(/\/+$/, '') + pathname
   const res = await fetch(url, {
     method,
     headers: {
@@ -88,11 +92,20 @@ export async function syncPeek(
     return []
   }
 
+  // Stop at the FIRST row that fails the schema instead of skipping it:
+  // the ack cursor covers everything at-or-before it, so acking past an
+  // unparsed row would mark a message delivered that was never surfaced.
+  // Processing the clean prefix keeps us safe AND making progress.
   const rows: SyncRow[] = []
-  for (const item of data) {
+  for (const [index, item] of data.entries()) {
     const parsed = SyncRowSchema.safeParse(item)
-    if (parsed.success) rows.push(parsed.data)
-    else log.debug('skipping sync row that failed schema parse')
+    if (!parsed.success) {
+      log.warn(
+        `sync row ${index} failed schema parse — processing the ${rows.length}-row prefix only`,
+      )
+      break
+    }
+    rows.push(parsed.data)
   }
   return rows
 }
