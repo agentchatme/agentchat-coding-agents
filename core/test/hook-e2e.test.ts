@@ -164,6 +164,14 @@ describe('session-start hook e2e', () => {
     const payload = JSON.parse(stdout)
     expect(Object.keys(payload)).toStrictEqual(['additional_context'])
   })
+
+  it('offers registration when unconfigured — but at most once per day', async () => {
+    fs.rmSync(path.join(home, 'credentials'))
+    const first = await runHook('session-start', 'claude-code', { session_id: 'fresh-1' })
+    expect(first.stdout).toContain('no AgentChat identity yet')
+    const second = await runHook('session-start', 'claude-code', { session_id: 'fresh-2' })
+    expect(second.stdout).toBe('')
+  })
 })
 
 describe('stop hook e2e', () => {
@@ -196,6 +204,21 @@ describe('stop hook e2e', () => {
     expect(api.queue).toHaveLength(1) // NOT acked — surfaces at next session start
     const other = await runHook('stop', 'codex', { session_id: 'different-session' })
     expect(JSON.parse(other.stdout).decision).toBe('block')
+  })
+
+  it('session-start resets a capped session — resuming is a new sitting', async () => {
+    for (let i = 1; i <= 5; i++) {
+      api.queue = [makeRow(i)]
+      await runHook('stop', 'codex', { session_id: 'resume-test' })
+    }
+    api.queue = [makeRow(50)]
+    const capped = await runHook('stop', 'codex', { session_id: 'resume-test' })
+    expect(capped.stdout).toBe('')
+
+    await runHook('session-start', 'codex', { session_id: 'resume-test' }) // drains row 50, resets budget
+    api.queue = [makeRow(51)]
+    const revived = await runHook('stop', 'codex', { session_id: 'resume-test' })
+    expect(JSON.parse(revived.stdout).decision).toBe('block')
   })
 
   it('honors the kill switch', async () => {

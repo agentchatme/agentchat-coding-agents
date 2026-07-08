@@ -18,6 +18,10 @@ const SessionStateSchema = z.object({
 
 const StateSchema = z.object({
   sessions: z.record(SessionStateSchema).default({}),
+  // Machine-wide timestamp of the last registration offer injected by the
+  // session-start hook. Keeps the unregistered-plugin nag to once a day
+  // instead of once per session.
+  last_offer_at: z.string().optional(),
 })
 
 export type HookState = z.infer<typeof StateSchema>
@@ -57,4 +61,31 @@ export function recordContinuation(sessionKey: string, now: Date = new Date()): 
   state.sessions[sessionKey] = { continuations: next, updated_at: now.toISOString() }
   writeState(state)
   return next
+}
+
+/**
+ * Give a session a fresh continuation budget. Called by the session-start
+ * hook: resuming a capped session is a new sitting, and its stop hook
+ * should be allowed to pick messages up again.
+ */
+export function resetSession(sessionKey: string): void {
+  const state = readState()
+  if (state.sessions[sessionKey] === undefined) return
+  delete state.sessions[sessionKey]
+  writeState(state)
+}
+
+const OFFER_COOLDOWN_MS = 24 * 60 * 60 * 1000
+
+export function shouldOfferRegistration(now: Date = new Date()): boolean {
+  const last = readState().last_offer_at
+  if (last === undefined) return true
+  const t = Date.parse(last)
+  return Number.isNaN(t) || now.getTime() - t >= OFFER_COOLDOWN_MS
+}
+
+export function recordRegistrationOffer(now: Date = new Date()): void {
+  const state = readState()
+  state.last_offer_at = now.toISOString()
+  writeState(state)
 }

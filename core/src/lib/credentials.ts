@@ -82,9 +82,14 @@ export function clearCredentials(): boolean {
 // ─── Pending registration (between `register` and `register --code`) ───────
 
 const PendingSchema = z.object({
+  // 'register' creates a new agent; 'recover' re-keys an existing one.
+  // Both share the two-invocation OTP shape, so they share this file —
+  // the kind guard stops `register --code` completing a recovery (and
+  // vice versa) with confusing results.
+  kind: z.enum(['register', 'recover']).default('register'),
   pending_id: z.string().min(1),
   email: z.string().email(),
-  handle: z.string().min(3),
+  handle: z.string().min(3).optional(),
   api_base: z.string().url().optional(),
   created_at: z.string(),
 })

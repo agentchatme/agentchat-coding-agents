@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util'
 import { isPlatform } from './lib/dialect.js'
 import { runSessionStartHook, runStopHook } from './commands/hook.js'
-import { runRegister, runLogin, runStatus, runLogout } from './commands/identity.js'
+import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
 import { runDoctor } from './commands/doctor.js'
 import { runAnchor } from './commands/anchor-cmd.js'
 import { VERSION } from './version.js'
@@ -12,6 +12,8 @@ Usage:
   agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_…>]
+  agentchat recover [--email <email>]        (lost key — rotates it)
+  agentchat recover --code <6-digit-code>
   agentchat status [--json]
   agentchat logout
   agentchat doctor
@@ -77,6 +79,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     case 'login':
       return runLogin({
         ...(values['api-key'] !== undefined ? { apiKey: values['api-key'] } : {}),
+        ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
+      })
+
+    case 'recover':
+      return runRecover({
+        ...(values.email !== undefined ? { email: values.email } : {}),
+        ...(values.code !== undefined ? { code: values.code } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
       })
 

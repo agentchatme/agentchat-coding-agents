@@ -1,7 +1,13 @@
 import { log } from '../lib/log.js'
 import { resolveIdentity } from '../lib/credentials.js'
 import { readHookInput } from '../lib/hook-input.js'
-import { getContinuations, recordContinuation } from '../lib/state.js'
+import {
+  getContinuations,
+  recordContinuation,
+  resetSession,
+  shouldOfferRegistration,
+  recordRegistrationOffer,
+} from '../lib/state.js'
 import { syncPeek, syncAck, lastDeliveryId, type WireConfig } from '../lib/wire.js'
 import { getMeLite } from '../lib/wire.js'
 import {
@@ -51,12 +57,21 @@ async function resolveHandle(cfg: WireConfig, cachedHandle: string | null): Prom
 export async function runSessionStartHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
-    await readHookInput() // drain stdin; session-start needs no fields from it
+    const input = await readHookInput()
+
+    // A session start is a new sitting — give this session a fresh stop-hook
+    // continuation budget (matters when resuming a session that hit the cap).
+    resetSession(`${platform}:${input.sessionId}`)
 
     const identity = resolveIdentity()
     if (identity === null) {
-      // First-run experience: let the agent offer registration once.
-      printJson(sessionStartOutput(platform, formatRegistrationOffer()))
+      // First-run experience: let the agent offer registration — but at most
+      // once a day machine-wide, not once per session. An unregistered
+      // plugin should be quiet, not a nag.
+      if (shouldOfferRegistration()) {
+        recordRegistrationOffer()
+        printJson(sessionStartOutput(platform, formatRegistrationOffer()))
+      }
       return
     }
 

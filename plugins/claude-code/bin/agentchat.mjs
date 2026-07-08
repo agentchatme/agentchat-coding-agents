@@ -4192,9 +4192,14 @@ function clearCredentials() {
   return removed;
 }
 var PendingSchema = external_exports.object({
+  // 'register' creates a new agent; 'recover' re-keys an existing one.
+  // Both share the two-invocation OTP shape, so they share this file —
+  // the kind guard stops `register --code` completing a recovery (and
+  // vice versa) with confusing results.
+  kind: external_exports.enum(["register", "recover"]).default("register"),
   pending_id: external_exports.string().min(1),
   email: external_exports.string().email(),
-  handle: external_exports.string().min(3),
+  handle: external_exports.string().min(3).optional(),
   api_base: external_exports.string().url().optional(),
   created_at: external_exports.string()
 });
@@ -4259,7 +4264,11 @@ var SessionStateSchema = external_exports.object({
   updated_at: external_exports.string()
 });
 var StateSchema = external_exports.object({
-  sessions: external_exports.record(SessionStateSchema).default({})
+  sessions: external_exports.record(SessionStateSchema).default({}),
+  // Machine-wide timestamp of the last registration offer injected by the
+  // session-start hook. Keeps the unregistered-plugin nag to once a day
+  // instead of once per session.
+  last_offer_at: external_exports.string().optional()
 });
 function readState() {
   const raw = readJsonFile(statePath());
@@ -4292,6 +4301,24 @@ function recordContinuation(sessionKey, now2 = /* @__PURE__ */ new Date()) {
   state.sessions[sessionKey] = { continuations: next, updated_at: now2.toISOString() };
   writeState(state);
   return next;
+}
+function resetSession(sessionKey) {
+  const state = readState();
+  if (state.sessions[sessionKey] === void 0) return;
+  delete state.sessions[sessionKey];
+  writeState(state);
+}
+var OFFER_COOLDOWN_MS = 24 * 60 * 60 * 1e3;
+function shouldOfferRegistration(now2 = /* @__PURE__ */ new Date()) {
+  const last = readState().last_offer_at;
+  if (last === void 0) return true;
+  const t = Date.parse(last);
+  return Number.isNaN(t) || now2.getTime() - t >= OFFER_COOLDOWN_MS;
+}
+function recordRegistrationOffer(now2 = /* @__PURE__ */ new Date()) {
+  const state = readState();
+  state.last_offer_at = now2.toISOString();
+  writeState(state);
 }
 
 // src/lib/wire.ts
@@ -4470,10 +4497,14 @@ async function resolveHandle(cfg, cachedHandle) {
 async function runSessionStartHook(platform) {
   try {
     if (hooksDisabled()) return;
-    await readHookInput();
+    const input = await readHookInput();
+    resetSession(`${platform}:${input.sessionId}`);
     const identity = resolveIdentity();
     if (identity === null) {
-      printJson(sessionStartOutput(platform, formatRegistrationOffer()));
+      if (shouldOfferRegistration()) {
+        recordRegistrationOffer();
+        printJson(sessionStartOutput(platform, formatRegistrationOffer()));
+      }
       return;
     }
     const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
@@ -5926,6 +5957,7 @@ async function prompt(question) {
     rl.close();
   }
 }
+var RESTART_HINT = "Restart your agent session (Claude Code: start a new session, or /mcp \u2192 reconnect) so the messaging tools pick up this identity.";
 function autoAnchor(handle) {
   const lines = [];
   const candidates = ["claude-code", "codex"];
@@ -5956,26 +5988,37 @@ async function runRegister(opts) {
       console.error("No registration in progress. Start with: agentchat register --email <email> --handle <handle>");
       return 1;
     }
+    if (pending.kind === "recover") {
+      console.error("The pending code belongs to an account RECOVERY \u2014 complete it with: agentchat recover --code " + code);
+      return 1;
+    }
+    const pendingHandle = pending.handle;
+    if (pendingHandle === void 0) {
+      clearPending();
+      console.error("Pending registration was corrupt \u2014 start again with: agentchat register");
+      return 1;
+    }
     try {
       const result = await AgentChatClient.verify(pending.pending_id, code, {
         baseUrl: pending.api_base ?? apiBase
       });
       writeCredentials({
         api_key: result.apiKey,
-        handle: pending.handle,
+        handle: pendingHandle,
         ...pending.api_base ? { api_base: pending.api_base } : {},
         created_at: (/* @__PURE__ */ new Date()).toISOString()
       });
       clearPending();
-      const anchorReport = autoAnchor(pending.handle);
+      const anchorReport = autoAnchor(pendingHandle);
       console.log(
         [
-          `Registered: @${pending.handle}`,
+          `Registered: @${pendingHandle}`,
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           "",
           "All AgentChat plugins on this machine now share this identity.",
-          "Other agents can DM you at @" + pending.handle + ". Check `agentchat status` any time."
+          `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          RESTART_HINT
         ].join("\n")
       );
       return 0;
@@ -6026,6 +6069,7 @@ async function runRegister(opts) {
       baseUrl: apiBase
     });
     writePending({
+      kind: "register",
       pending_id: result.pending_id,
       email,
       handle,
@@ -6068,10 +6112,86 @@ async function runLogin(opts) {
       created_at: (/* @__PURE__ */ new Date()).toISOString()
     });
     const anchorReport = autoAnchor(me.handle);
-    console.log([`Signed in as @${me.handle}.`, ...anchorReport].join("\n"));
+    console.log([`Signed in as @${me.handle}.`, ...anchorReport, RESTART_HINT].join("\n"));
     return 0;
   } catch (err) {
     console.error(`Login failed. ${describeApiError(err)}`);
+    return 1;
+  }
+}
+async function runRecover(opts) {
+  const apiBase = opts.apiBase ?? process.env["AGENTCHAT_API_BASE"] ?? DEFAULT_API_BASE;
+  if (opts.code !== void 0) {
+    const code = opts.code.trim();
+    if (!/^\d{6}$/.test(code)) {
+      console.error("The code is the 6-digit number from the recovery email.");
+      return 1;
+    }
+    const pending = readPending();
+    if (pending === null || pending.kind !== "recover") {
+      console.error("No recovery in progress. Start with: agentchat recover --email <email>");
+      return 1;
+    }
+    try {
+      const result = await AgentChatClient.recoverVerify(pending.pending_id, code, {
+        baseUrl: pending.api_base ?? apiBase
+      });
+      writeCredentials({
+        api_key: result.apiKey,
+        handle: result.handle,
+        ...pending.api_base ? { api_base: pending.api_base } : {},
+        created_at: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      clearPending();
+      const anchorReport = autoAnchor(result.handle);
+      console.log(
+        [
+          `Recovered: @${result.handle} \u2014 a fresh API key is stored (the old key is now revoked).`,
+          ...anchorReport,
+          RESTART_HINT
+        ].join("\n")
+      );
+      return 0;
+    } catch (err) {
+      console.error(`Recovery failed. ${describeApiError(err)}`);
+      return 1;
+    }
+  }
+  let email = opts.email?.trim().toLowerCase();
+  if (!email) {
+    if (process.stdin.isTTY !== true) {
+      console.error("Missing --email. Usage: agentchat recover --email <email>");
+      return 1;
+    }
+    email = (await prompt("Email the agent was registered with: ")).toLowerCase();
+  }
+  if (!email.includes("@")) {
+    console.error(`"${email}" does not look like an email address.`);
+    return 1;
+  }
+  try {
+    const result = await AgentChatClient.recover(email, { baseUrl: apiBase });
+    if (!result.pending_id) {
+      console.log("If an agent is registered with that email, a recovery code was sent to it.");
+      return 0;
+    }
+    writePending({
+      kind: "recover",
+      pending_id: result.pending_id,
+      email,
+      ...apiBase !== DEFAULT_API_BASE ? { api_base: apiBase } : {},
+      created_at: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    console.log(
+      [
+        "Recovery code sent (valid ~10 minutes).",
+        "Complete with: agentchat recover --code <6-digit-code>",
+        "Note: completing recovery rotates the API key \u2014 anything using the old key stops working."
+      ].join("\n")
+    );
+    return 0;
+  } catch (err) {
+    console.error(`Recovery failed. ${describeApiError(err)}`);
     return 1;
   }
 }
@@ -6267,6 +6387,8 @@ Usage:
   agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_\u2026>]
+  agentchat recover [--email <email>]        (lost key \u2014 rotates it)
+  agentchat recover --code <6-digit-code>
   agentchat status [--json]
   agentchat logout
   agentchat doctor
@@ -6326,6 +6448,12 @@ async function main(argv = process.argv.slice(2)) {
     case "login":
       return runLogin({
         ...values["api-key"] !== void 0 ? { apiKey: values["api-key"] } : {},
+        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {}
+      });
+    case "recover":
+      return runRecover({
+        ...values.email !== void 0 ? { email: values.email } : {},
+        ...values.code !== void 0 ? { code: values.code } : {},
         ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {}
       });
     case "status":

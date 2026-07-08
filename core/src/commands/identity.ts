@@ -79,6 +79,11 @@ async function prompt(question: string): Promise<string> {
   }
 }
 
+// The MCP server in an already-open session validated credentials at its
+// startup — a fresh identity is only picked up on reconnect.
+const RESTART_HINT =
+  'Restart your agent session (Claude Code: start a new session, or /mcp → reconnect) so the messaging tools pick up this identity.'
+
 /** Install anchors for every platform whose host directory exists. */
 function autoAnchor(handle: string): string[] {
   const lines: string[] = []
@@ -113,26 +118,37 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
       console.error('No registration in progress. Start with: agentchat register --email <email> --handle <handle>')
       return 1
     }
+    if (pending.kind === 'recover') {
+      console.error('The pending code belongs to an account RECOVERY — complete it with: agentchat recover --code ' + code)
+      return 1
+    }
+    const pendingHandle = pending.handle
+    if (pendingHandle === undefined) {
+      clearPending()
+      console.error('Pending registration was corrupt — start again with: agentchat register')
+      return 1
+    }
     try {
       const result = await AgentChatClient.verify(pending.pending_id, code, {
         baseUrl: pending.api_base ?? apiBase,
       })
       writeCredentials({
         api_key: result.apiKey,
-        handle: pending.handle,
+        handle: pendingHandle,
         ...(pending.api_base ? { api_base: pending.api_base } : {}),
         created_at: new Date().toISOString(),
       })
       clearPending()
-      const anchorReport = autoAnchor(pending.handle)
+      const anchorReport = autoAnchor(pendingHandle)
       console.log(
         [
-          `Registered: @${pending.handle}`,
+          `Registered: @${pendingHandle}`,
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           '',
           'All AgentChat plugins on this machine now share this identity.',
-          'Other agents can DM you at @' + pending.handle + '. Check `agentchat status` any time.',
+          `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          RESTART_HINT,
         ].join('\n'),
       )
       return 0
@@ -189,6 +205,7 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
       baseUrl: apiBase,
     })
     writePending({
+      kind: 'register',
       pending_id: result.pending_id,
       email,
       handle,
@@ -234,10 +251,100 @@ export async function runLogin(opts: { apiKey?: string; apiBase?: string }): Pro
       created_at: new Date().toISOString(),
     })
     const anchorReport = autoAnchor(me.handle)
-    console.log([`Signed in as @${me.handle}.`, ...anchorReport].join('\n'))
+    console.log([`Signed in as @${me.handle}.`, ...anchorReport, RESTART_HINT].join('\n'))
     return 0
   } catch (err) {
     console.error(`Login failed. ${describeApiError(err)}`)
+    return 1
+  }
+}
+
+/**
+ * Account recovery: re-key an existing agent when the API key is lost.
+ * Same two-invocation OTP shape as registration. The server masks
+ * account existence — a missing account still reports "code sent".
+ */
+export async function runRecover(opts: {
+  email?: string
+  code?: string
+  apiBase?: string
+}): Promise<number> {
+  const apiBase = opts.apiBase ?? process.env['AGENTCHAT_API_BASE'] ?? DEFAULT_API_BASE
+
+  if (opts.code !== undefined) {
+    const code = opts.code.trim()
+    if (!/^\d{6}$/.test(code)) {
+      console.error('The code is the 6-digit number from the recovery email.')
+      return 1
+    }
+    const pending = readPending()
+    if (pending === null || pending.kind !== 'recover') {
+      console.error('No recovery in progress. Start with: agentchat recover --email <email>')
+      return 1
+    }
+    try {
+      const result = await AgentChatClient.recoverVerify(pending.pending_id, code, {
+        baseUrl: pending.api_base ?? apiBase,
+      })
+      writeCredentials({
+        api_key: result.apiKey,
+        handle: result.handle,
+        ...(pending.api_base ? { api_base: pending.api_base } : {}),
+        created_at: new Date().toISOString(),
+      })
+      clearPending()
+      const anchorReport = autoAnchor(result.handle)
+      console.log(
+        [
+          `Recovered: @${result.handle} — a fresh API key is stored (the old key is now revoked).`,
+          ...anchorReport,
+          RESTART_HINT,
+        ].join('\n'),
+      )
+      return 0
+    } catch (err) {
+      console.error(`Recovery failed. ${describeApiError(err)}`)
+      return 1
+    }
+  }
+
+  let email = opts.email?.trim().toLowerCase()
+  if (!email) {
+    if (process.stdin.isTTY !== true) {
+      console.error('Missing --email. Usage: agentchat recover --email <email>')
+      return 1
+    }
+    email = (await prompt('Email the agent was registered with: ')).toLowerCase()
+  }
+  if (!email.includes('@')) {
+    console.error(`"${email}" does not look like an email address.`)
+    return 1
+  }
+
+  try {
+    const result = await AgentChatClient.recover(email, { baseUrl: apiBase })
+    if (!result.pending_id) {
+      // Existence-masked: no pending id means nothing to verify against.
+      console.log('If an agent is registered with that email, a recovery code was sent to it.')
+      return 0
+    }
+    writePending({
+      kind: 'recover',
+      pending_id: result.pending_id,
+      email,
+      ...(apiBase !== DEFAULT_API_BASE ? { api_base: apiBase } : {}),
+      created_at: new Date().toISOString(),
+    })
+    console.log(
+      [
+        'Recovery code sent (valid ~10 minutes).',
+        'Complete with: agentchat recover --code <6-digit-code>',
+        'Note: completing recovery rotates the API key — anything using the old key stops working.',
+      ].join('\n'),
+    )
+    return 0
+  } catch (err) {
+    console.error(`Recovery failed. ${describeApiError(err)}`)
     return 1
   }
 }
