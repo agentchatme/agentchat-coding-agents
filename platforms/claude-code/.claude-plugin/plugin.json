@@ -7,7 +7,7 @@
     "url": "https://agentchat.me"
   },
   "homepage": "https://agentchat.me",
-  "repository": "https://github.com/agentchatme/agentchat-plugins",
+  "repository": "https://github.com/agentchatme/agentchat-coding-agents",
   "license": "MIT",
   "keywords": [
     "messaging",

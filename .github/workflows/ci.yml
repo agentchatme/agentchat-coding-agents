@@ -25,4 +25,4 @@ jobs:
       - run: pnpm build
       - run: pnpm test
       - name: stamped artifacts are current
-        run: git diff --exit-code plugins/
+        run: git diff --exit-code platforms/

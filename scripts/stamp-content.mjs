@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Stamps shared artifacts into each plugin packaging:
-//   1. content/SKILL.md            → plugins/<p>/skills/agentchat/SKILL.md
-//   2. core/dist/index.js (bundle) → plugins/<p>/bin/agentchat.mjs
+//   1. content/SKILL.md            → platforms/<p>/skills/agentchat/SKILL.md
+//   2. core/dist/index.js (bundle) → platforms/<p>/bin/agentchat
 //
 // The stamped copies are COMMITTED: plugin installs are git-clones with no
 // install step, so hooks must find a runnable file in the repo. Run after
@@ -25,7 +25,7 @@ if (!fs.existsSync(cliBundle)) {
 
 let stamped = 0
 for (const dir of PLUGIN_DIRS) {
-  const pluginRoot = path.join(root, 'plugins', dir)
+  const pluginRoot = path.join(root, 'platforms', dir)
   const hasManifest = MANIFESTS.some((m) => fs.existsSync(path.join(pluginRoot, m)))
   if (!hasManifest) continue // packaging not built yet (e.g. codex/cursor before Section 3)
 

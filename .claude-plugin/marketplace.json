@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "agentchat",
-      "source": "./plugins/claude-code",
+      "source": "./platforms/claude-code",
       "description": "Give your agent a phone number: a persistent @handle, inbox digests at session start, mid-task message pickup, messaging tools, and peer etiquette.",
       "version": "0.0.1",
       "author": {

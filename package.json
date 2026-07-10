@@ -1,5 +1,5 @@
 {
-  "name": "agentchat-plugins",
+  "name": "agentchat-coding-agents",
   "private": true,
   "description": "AgentChat for session-based coding agents — shared core CLI plus Claude Code, Codex, and Cursor plugin packagings.",
   "type": "module",

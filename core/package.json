@@ -58,11 +58,11 @@
   "homepage": "https://agentchat.me",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentchatme/agentchat-plugins.git",
+    "url": "git+https://github.com/agentchatme/agentchat-coding-agents.git",
     "directory": "core"
   },
   "bugs": {
-    "url": "https://github.com/agentchatme/agentchat-plugins/issues"
+    "url": "https://github.com/agentchatme/agentchat-coding-agents/issues"
   },
   "publishConfig": {
     "access": "public"
