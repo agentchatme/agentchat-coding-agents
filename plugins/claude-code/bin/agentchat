@@ -6325,7 +6325,7 @@ import * as fs5 from "fs";
 import * as path5 from "path";
 
 // src/version.ts
-var VERSION2 = "0.1.0";
+var VERSION2 = "0.0.1";
 
 // src/commands/doctor.ts
 function fmt(check) {
