@@ -6657,10 +6657,12 @@ function resolvePlatform(value) {
   return value;
 }
 main().then(
-  (code) => process.exit(code),
+  (code) => {
+    process.exitCode = code;
+  },
   (err) => {
     console.error(String(err instanceof Error ? err.stack ?? err.message : err));
-    process.exit(1);
+    process.exitCode = 1;
   }
 );
 export {

@@ -1,0 +1,4 @@
+# The stamped CLI bundles must stay byte-identical to tsup output on every
+# platform: CI rebuilds and diffs them, and a Windows checkout must not
+# CRLF-flip what the stamp script wrote.
+platforms/*/bin/agentchat text eol=lf

@@ -77,7 +77,8 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
       env: {
         ...process.env,
         AGENTCHAT_HOME: home,
-        HOME: fakeHome, // anchors resolve under here, never the real ~
+        HOME: fakeHome, // anchors resolve under here on POSIX…
+        USERPROFILE: fakeHome, // …and here on Windows — never the real ~
         AGENTCHAT_API_KEY: '',
         AGENTCHAT_API_BASE: '',
         AGENTCHAT_LOG_LEVEL: 'silent',
@@ -109,7 +110,10 @@ describe('register e2e', () => {
 
     const creds = JSON.parse(fs.readFileSync(path.join(home, 'credentials'), 'utf-8'))
     expect(creds).toMatchObject({ api_key: NEW_KEY, handle: 'e2e-agent', api_base: base })
-    expect(fs.statSync(path.join(home, 'credentials')).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') {
+      // Windows has no POSIX mode bits — stat reports 0o666 regardless of chmod.
+      expect(fs.statSync(path.join(home, 'credentials')).mode & 0o777).toBe(0o600)
+    }
     expect(fs.existsSync(path.join(home, 'pending.json'))).toBe(false)
     expect(fs.readFileSync(path.join(fakeHome, '.claude', 'CLAUDE.md'), 'utf-8')).toContain('@e2e-agent')
   })

@@ -145,10 +145,17 @@ function resolvePlatform(value: string | undefined) {
 
 // Invoked as a bin: run and translate the exit code. The hook commands
 // swallow their own errors (exit 0 always); everything else may return 1.
+// Set exitCode and drain naturally — NEVER process.exit(): exiting while
+// undici tears down its keep-alive socket (any command that spoke HTTP)
+// aborts the whole process on Windows with a libuv assertion, which a host
+// platform reads as a crashed hook. Nothing here holds the loop open, so
+// draining is immediate.
 main().then(
-  (code) => process.exit(code),
+  (code) => {
+    process.exitCode = code
+  },
   (err) => {
     console.error(String(err instanceof Error ? (err.stack ?? err.message) : err))
-    process.exit(1)
+    process.exitCode = 1
   },
 )

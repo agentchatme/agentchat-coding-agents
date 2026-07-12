@@ -15,17 +15,27 @@ import {
 } from '../src/lib/anchor.js'
 
 // installAnchor resolves through os.homedir(), which honors $HOME on
-// POSIX — point it at a scratch dir per test.
+// POSIX and %USERPROFILE% on Windows — point BOTH at a scratch dir per
+// test so no run on any platform can touch the real ~.
 let home: string
 const originalHome = process.env['HOME']
+const originalUserProfile = process.env['USERPROFILE']
+
+function restoreEnv(name: string, value: string | undefined): void {
+  // `process.env[x] = undefined` stores the string "undefined" — delete instead.
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-anchor-'))
   process.env['HOME'] = home
+  process.env['USERPROFILE'] = home
 })
 
 afterEach(() => {
-  process.env['HOME'] = originalHome
+  restoreEnv('HOME', originalHome)
+  restoreEnv('USERPROFILE', originalUserProfile)
   fs.rmSync(home, { recursive: true, force: true })
 })
 

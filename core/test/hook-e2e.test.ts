@@ -174,10 +174,12 @@ describe('session-start hook e2e', () => {
   it('offers registration when unconfigured — but at most once per day', async () => {
     fs.rmSync(path.join(home, 'credentials'))
     const first = await runHook('session-start', 'claude-code', { session_id: 'fresh-1' })
-    expect(first.stdout).toContain('no AgentChat identity yet')
+    // Compare inside the parsed payload — raw stdout JSON-escapes Windows backslashes.
+    const offer = JSON.parse(first.stdout).hookSpecificOutput.additionalContext as string
+    expect(offer).toContain('no AgentChat identity yet')
     // The instructed command must exist on a FRESH machine: absolute path
     // to the running bundle, not a bare binary name that may not be on PATH.
-    expect(first.stdout).toContain(BIN)
+    expect(offer).toContain(BIN)
     const second = await runHook('session-start', 'claude-code', { session_id: 'fresh-2' })
     expect(second.stdout).toBe('')
   })
