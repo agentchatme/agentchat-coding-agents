@@ -10,7 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [20, 22]
+        # pnpm 11 needs Node >=22.13 to RUN THE BUILD; the published bundle
+        # itself still targets/supports Node >=20 (esbuild target node20,
+        # no post-20 APIs).
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
