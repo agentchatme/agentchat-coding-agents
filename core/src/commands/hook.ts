@@ -5,6 +5,8 @@ import {
   getContinuations,
   recordContinuation,
   resetSession,
+  setPendingAck,
+  takePendingAck,
   shouldOfferRegistration,
   recordRegistrationOffer,
 } from '../lib/state.js'
@@ -24,13 +26,15 @@ import { sessionStartOutput, stopOutput, type Platform } from '../lib/dialect.js
 //      context this turn", never to a broken session.
 //   2. stdout carries either one JSON object (the platform dialect) or
 //      nothing at all (no-op). Diagnostics go to stderr only.
-//   3. Ack-on-injection, print FIRST: the digest goes to stdout before the
-//      ack request, so a crash between the two re-delivers (duplicate)
-//      rather than losing a never-surfaced message (at-least-once, same
-//      posture as the server's delivery model). Cap-exceeded never acks so
-//      queued messages surface at the next session start instead. Rows
-//      without an ackable delivery_id are never injected — they could only
-//      re-inject forever.
+//   3. Ack only when a session PROVES it is real. Session-start injects
+//      the digest and records the cursor as pending; the user-prompt hook
+//      commits it — a prompt actually running is the proof. A session that
+//      dies before its first prompt (arg-error invocation, crashed
+//      startup — live-fired 2026-07-12) leaves the batch unacked and it
+//      re-digests next session: duplicate beats loss, always. The stop
+//      hook acks at print time (a turn is running by definition there).
+//      Cap-exceeded never acks. Rows without an ackable delivery_id are
+//      never injected — they could only re-inject forever.
 
 const SESSION_START_PEEK_LIMIT = 100
 const STOP_PEEK_LIMIT = 50
@@ -105,19 +109,44 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
     const handle = await resolveHandle(cfg, identity.handle)
     const context = formatSessionStart(handle, rows)
 
-    // Print first, ack second: see invariant 3 in the header.
-    printJson(sessionStartOutput(platform, context))
-
+    // Record the cursor as pending — committed by the user-prompt hook
+    // once a turn actually runs (invariant 3). Then inject.
     const cursor = lastDeliveryId(rows)
     if (cursor !== null) {
-      try {
-        await syncAck(cfg, cursor)
-      } catch (err) {
-        log.warn(`session-start ack failed (will re-surface next session): ${String(err)}`)
-      }
+      setPendingAck(`${platform}:${input.sessionId}`, cursor)
     }
+    printJson(sessionStartOutput(platform, context))
   } catch (err) {
     log.warn(`session-start hook degraded to no-op: ${String(err)}`)
+  }
+}
+
+/**
+ * UserPromptSubmit: a prompt is running, so the session is real — commit
+ * the digest batch that session-start injected. Silent in every outcome.
+ */
+export async function runUserPromptHook(platform: Platform): Promise<void> {
+  try {
+    if (hooksDisabled()) return
+    const input = await readHookInput()
+    const identity = resolveIdentity()
+    if (identity === null) return
+
+    const sessionKey = `${platform}:${input.sessionId}`
+    const cursor = takePendingAck(sessionKey)
+    if (cursor === null) return
+
+    const cfg: WireConfig = { apiKey: identity.apiKey, apiBase: identity.apiBase }
+    try {
+      await syncAck(cfg, cursor)
+    } catch (err) {
+      // Put it back — the next prompt retries. Rows stay stored server-side
+      // either way, so the worst case is a duplicate digest next session.
+      setPendingAck(sessionKey, cursor)
+      log.warn(`user-prompt ack failed (will retry next prompt): ${String(err)}`)
+    }
+  } catch (err) {
+    log.warn(`user-prompt hook degraded to no-op: ${String(err)}`)
   }
 }
 

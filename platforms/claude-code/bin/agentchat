@@ -4266,7 +4266,14 @@ function firstString(obj, keys) {
 var SESSION_TTL_MS = 48 * 60 * 60 * 1e3;
 var SessionStateSchema = external_exports.object({
   continuations: external_exports.number().int().min(0),
-  updated_at: external_exports.string()
+  updated_at: external_exports.string(),
+  // Ack cursor for the batch the session-start hook injected but has NOT
+  // yet committed. Committed by the user-prompt hook — proof the session
+  // actually ran a turn. A session that dies before its first prompt
+  // (arg-error invocations, crashed startups) leaves this uncommitted and
+  // the batch re-digests next session instead of being consumed by a
+  // ghost. Live-fire lesson, 2026-07-12.
+  pending_ack: external_exports.string().optional()
 });
 var StateSchema = external_exports.object({
   sessions: external_exports.record(SessionStateSchema).default({}),
@@ -4312,6 +4319,27 @@ function resetSession(sessionKey) {
   if (state.sessions[sessionKey] === void 0) return;
   delete state.sessions[sessionKey];
   writeState(state);
+}
+function setPendingAck(sessionKey, cursor, now2 = /* @__PURE__ */ new Date()) {
+  const state = readState();
+  prune(state, now2);
+  const existing = state.sessions[sessionKey];
+  state.sessions[sessionKey] = {
+    continuations: existing?.continuations ?? 0,
+    updated_at: now2.toISOString(),
+    pending_ack: cursor
+  };
+  writeState(state);
+}
+function takePendingAck(sessionKey, now2 = /* @__PURE__ */ new Date()) {
+  const state = readState();
+  const entry = state.sessions[sessionKey];
+  if (entry?.pending_ack === void 0) return null;
+  const cursor = entry.pending_ack;
+  delete entry.pending_ack;
+  entry.updated_at = now2.toISOString();
+  writeState(state);
+  return cursor;
 }
 var OFFER_COOLDOWN_MS = 24 * 60 * 60 * 1e3;
 function shouldOfferRegistration(now2 = /* @__PURE__ */ new Date()) {
@@ -4538,17 +4566,33 @@ async function runSessionStartHook(platform) {
     if (rows.length === 0) return;
     const handle = await resolveHandle(cfg, identity.handle);
     const context = formatSessionStart(handle, rows);
-    printJson(sessionStartOutput(platform, context));
     const cursor = lastDeliveryId(rows);
     if (cursor !== null) {
-      try {
-        await syncAck(cfg, cursor);
-      } catch (err) {
-        log.warn(`session-start ack failed (will re-surface next session): ${String(err)}`);
-      }
+      setPendingAck(`${platform}:${input.sessionId}`, cursor);
     }
+    printJson(sessionStartOutput(platform, context));
   } catch (err) {
     log.warn(`session-start hook degraded to no-op: ${String(err)}`);
+  }
+}
+async function runUserPromptHook(platform) {
+  try {
+    if (hooksDisabled()) return;
+    const input = await readHookInput();
+    const identity = resolveIdentity();
+    if (identity === null) return;
+    const sessionKey = `${platform}:${input.sessionId}`;
+    const cursor = takePendingAck(sessionKey);
+    if (cursor === null) return;
+    const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
+    try {
+      await syncAck(cfg, cursor);
+    } catch (err) {
+      setPendingAck(sessionKey, cursor);
+      log.warn(`user-prompt ack failed (will retry next prompt): ${String(err)}`);
+    }
+  } catch (err) {
+    log.warn(`user-prompt hook degraded to no-op: ${String(err)}`);
   }
 }
 async function runStopHook(platform) {
@@ -6645,7 +6689,11 @@ async function main(argv = process.argv.slice(2)) {
         await runStopHook(platform);
         return 0;
       }
-      console.error("Usage: agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>");
+      if (subcommand === "user-prompt") {
+        await runUserPromptHook(platform);
+        return 0;
+      }
+      console.error("Usage: agentchat hook <session-start|stop|user-prompt> --platform <claude-code|codex|cursor>");
       return 1;
     }
     default:

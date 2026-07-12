@@ -136,7 +136,7 @@ beforeEach(() => {
 })
 
 describe('session-start hook e2e', () => {
-  it('injects a digest and acks exactly the injected batch', async () => {
+  it('injects a digest, defers the ack, and the user-prompt hook commits it', async () => {
     api.queue = [makeRow(1), makeRow(2), makeRow(3, 'grp_team')]
     const { stdout } = await runHook('session-start', 'claude-code', { session_id: 's1' })
     const payload = JSON.parse(stdout)
@@ -145,8 +145,41 @@ describe('session-start hook e2e', () => {
     expect(context).toContain('You are @demo-agent on AgentChat.')
     expect(context).toContain('3 unread messages in 2 conversations:')
     expect(context).toContain('"ping 2"')
+    // NOT acked yet — the session hasn't proven it's real.
+    expect(api.acks).toHaveLength(0)
+    expect(api.queue).toHaveLength(3)
+
+    // First prompt runs → the pending batch commits, silently.
+    const prompt = await runHook('user-prompt', 'claude-code', { session_id: 's1' })
+    expect(prompt.stdout).toBe('')
     expect(api.acks).toEqual([`del_${String(3).padStart(32, '0')}`])
     expect(api.queue).toHaveLength(0)
+
+    // Second prompt: nothing pending, no extra ack.
+    await runHook('user-prompt', 'claude-code', { session_id: 's1' })
+    expect(api.acks).toHaveLength(1)
+  })
+
+  it('a ghost session (dies before any prompt) never consumes the batch', async () => {
+    api.queue = [makeRow(1)]
+    const ghost = await runHook('session-start', 'claude-code', { session_id: 'ghost' })
+    expect(JSON.parse(ghost.stdout).hookSpecificOutput.additionalContext).toContain('"ping 1"')
+    // Ghost dies here — no user-prompt ever fires. Next session re-digests:
+    const real = await runHook('session-start', 'claude-code', { session_id: 'real' })
+    expect(JSON.parse(real.stdout).hookSpecificOutput.additionalContext).toContain('"ping 1"')
+    await runHook('user-prompt', 'claude-code', { session_id: 'real' })
+    expect(api.queue).toHaveLength(0)
+  })
+
+  it('retries the commit on the next prompt when the ack call fails', async () => {
+    api.queue = [makeRow(1)]
+    await runHook('session-start', 'claude-code', { session_id: 's-retry' })
+    api.failAck = true
+    await runHook('user-prompt', 'claude-code', { session_id: 's-retry' })
+    expect(api.queue).toHaveLength(1) // commit failed, batch still queued
+    api.failAck = false
+    await runHook('user-prompt', 'claude-code', { session_id: 's-retry' })
+    expect(api.queue).toHaveLength(0) // pending was restored and retried
   })
 
   it('is silent when the inbox is empty', async () => {
@@ -184,15 +217,7 @@ describe('session-start hook e2e', () => {
     expect(second.stdout).toBe('')
   })
 
-  it('prints the digest even when the ack call fails (at-least-once, never at-most-once)', async () => {
-    api.queue = [makeRow(1)]
-    api.failAck = true
-    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 's-ackfail' })
-    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('"ping 1"')
-    expect(api.queue).toHaveLength(1) // still queued — will re-surface (duplicate beats loss)
-  })
-
-  it('stops at the first malformed sync row and never acks past it', async () => {
+  it('stops at the first malformed sync row and never commits past it', async () => {
     api.queue = [
       makeRow(1),
       { ...makeRow(2), id: 12345 }, // numeric id fails the schema
@@ -202,6 +227,7 @@ describe('session-start hook e2e', () => {
     const context = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
     expect(context).toContain('"ping 1"')
     expect(context).not.toContain('ping 3')
+    await runHook('user-prompt', 'claude-code', { session_id: 's-prefix' })
     expect(api.acks).toEqual([`del_${String(1).padStart(32, '0')}`])
     expect(api.queue).toHaveLength(2) // malformed row + everything after it stay queued
   })

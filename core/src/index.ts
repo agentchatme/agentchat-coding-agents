@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import { isPlatform } from './lib/dialect.js'
-import { runSessionStartHook, runStopHook } from './commands/hook.js'
+import { runSessionStartHook, runStopHook, runUserPromptHook } from './commands/hook.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
 import { runInstall } from './commands/install.js'
 import { runDoctor } from './commands/doctor.js'
@@ -124,7 +124,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         await runStopHook(platform)
         return 0
       }
-      console.error('Usage: agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>')
+      if (subcommand === 'user-prompt') {
+        await runUserPromptHook(platform)
+        return 0
+      }
+      console.error('Usage: agentchat hook <session-start|stop|user-prompt> --platform <claude-code|codex|cursor>')
       return 1
     }
 

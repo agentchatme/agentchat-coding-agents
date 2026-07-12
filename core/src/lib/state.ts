@@ -21,6 +21,13 @@ const SESSION_TTL_MS = 48 * 60 * 60 * 1000
 const SessionStateSchema = z.object({
   continuations: z.number().int().min(0),
   updated_at: z.string(),
+  // Ack cursor for the batch the session-start hook injected but has NOT
+  // yet committed. Committed by the user-prompt hook — proof the session
+  // actually ran a turn. A session that dies before its first prompt
+  // (arg-error invocations, crashed startups) leaves this uncommitted and
+  // the batch re-digests next session instead of being consumed by a
+  // ghost. Live-fire lesson, 2026-07-12.
+  pending_ack: z.string().optional(),
 })
 
 const StateSchema = z.object({
@@ -80,6 +87,30 @@ export function resetSession(sessionKey: string): void {
   if (state.sessions[sessionKey] === undefined) return
   delete state.sessions[sessionKey]
   writeState(state)
+}
+
+export function setPendingAck(sessionKey: string, cursor: string, now: Date = new Date()): void {
+  const state = readState()
+  prune(state, now)
+  const existing = state.sessions[sessionKey]
+  state.sessions[sessionKey] = {
+    continuations: existing?.continuations ?? 0,
+    updated_at: now.toISOString(),
+    pending_ack: cursor,
+  }
+  writeState(state)
+}
+
+/** Read-and-clear the pending cursor for a session (user-prompt hook). */
+export function takePendingAck(sessionKey: string, now: Date = new Date()): string | null {
+  const state = readState()
+  const entry = state.sessions[sessionKey]
+  if (entry?.pending_ack === undefined) return null
+  const cursor = entry.pending_ack
+  delete entry.pending_ack
+  entry.updated_at = now.toISOString()
+  writeState(state)
+  return cursor
 }
 
 const OFFER_COOLDOWN_MS = 24 * 60 * 60 * 1000
