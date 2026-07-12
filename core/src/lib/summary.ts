@@ -29,7 +29,7 @@ function snippetOf(row: SyncRow): string {
 export function digestConversations(rows: SyncRow[]): ConversationDigest[] {
   const byConversation = new Map<string, ConversationDigest>()
   for (const row of rows) {
-    const sender = row.sender_handle ?? 'unknown'
+    const sender = row.sender ?? row.sender_handle ?? 'unknown'
     const existing = byConversation.get(row.conversation_id)
     if (existing) {
       existing.count += 1

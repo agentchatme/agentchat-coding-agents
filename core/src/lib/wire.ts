@@ -18,6 +18,11 @@ const SyncRowSchema = z
     id: z.string(),
     conversation_id: z.string(),
     delivery_id: z.string().nullable(),
+    // The public message shape carries the sender's handle as `sender`
+    // (live-fire verified against prod 2026-07-12; `sender_handle` is the
+    // dashboard-RPC shape and never appears on this wire — kept only as a
+    // fallback against a future server-side rename).
+    sender: z.string().optional(),
     sender_handle: z.string().optional(),
     type: z.string().optional(),
     content: z.record(z.unknown()).optional(),

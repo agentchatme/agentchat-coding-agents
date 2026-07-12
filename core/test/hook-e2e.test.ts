@@ -33,7 +33,7 @@ function makeRow(n: number, conversation = 'conv_e2e'): Record<string, unknown> 
     id: `msg_${n}`,
     conversation_id: conversation,
     delivery_id: `del_${String(n).padStart(32, '0')}`,
-    sender_handle: 'san-asst',
+    sender: 'san-asst',
     type: 'text',
     content: { text: `ping ${n}` },
     created_at: new Date(1751900000000 + n * 1000).toISOString(),

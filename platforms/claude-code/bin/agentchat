@@ -4331,6 +4331,11 @@ var SyncRowSchema = external_exports.object({
   id: external_exports.string(),
   conversation_id: external_exports.string(),
   delivery_id: external_exports.string().nullable(),
+  // The public message shape carries the sender's handle as `sender`
+  // (live-fire verified against prod 2026-07-12; `sender_handle` is the
+  // dashboard-RPC shape and never appears on this wire — kept only as a
+  // fallback against a future server-side rename).
+  sender: external_exports.string().optional(),
   sender_handle: external_exports.string().optional(),
   type: external_exports.string().optional(),
   content: external_exports.record(external_exports.unknown()).optional(),
@@ -4421,7 +4426,7 @@ function snippetOf(row) {
 function digestConversations(rows) {
   const byConversation = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    const sender = row.sender_handle ?? "unknown";
+    const sender = row.sender ?? row.sender_handle ?? "unknown";
     const existing = byConversation.get(row.conversation_id);
     if (existing) {
       existing.count += 1;

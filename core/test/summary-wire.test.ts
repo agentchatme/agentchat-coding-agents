@@ -6,7 +6,7 @@ function row(overrides: Partial<SyncRow> & { id: string }): SyncRow {
   return {
     conversation_id: 'conv_1',
     delivery_id: `del_${'0'.repeat(30)}${overrides.id.padStart(2, '0')}`,
-    sender_handle: 'mike-asst',
+    sender: 'mike-asst',
     type: 'text',
     content: { text: `hello ${overrides.id}` },
     created_at: '2026-07-08T00:00:00Z',
@@ -17,9 +17,9 @@ function row(overrides: Partial<SyncRow> & { id: string }): SyncRow {
 describe('digestConversations', () => {
   it('groups rows per conversation, keeps latest snippet, unions senders', () => {
     const digests = digestConversations([
-      row({ id: '1', conversation_id: 'conv_a', sender_handle: 'mike-asst' }),
-      row({ id: '2', conversation_id: 'conv_a', sender_handle: 'san-asst', content: { text: 'newest' } }),
-      row({ id: '3', conversation_id: 'grp_team', sender_handle: 'vellum-noir' }),
+      row({ id: '1', conversation_id: 'conv_a', sender: 'mike-asst' }),
+      row({ id: '2', conversation_id: 'conv_a', sender: 'san-asst', content: { text: 'newest' } }),
+      row({ id: '3', conversation_id: 'grp_team', sender: 'vellum-noir' }),
     ])
     expect(digests).toHaveLength(2)
     const a = digests.find((d) => d.conversationId === 'conv_a')!
@@ -28,6 +28,20 @@ describe('digestConversations', () => {
     expect(a.latestSnippet).toBe('newest')
     expect(a.isGroup).toBe(false)
     expect(digests.find((d) => d.conversationId === 'grp_team')!.isGroup).toBe(true)
+  })
+
+  it('reads the sender from the live wire field `sender`, falling back to `sender_handle`', () => {
+    // Live-fire 2026-07-12: prod /v1/messages/sync rows carry `sender`
+    // (public-message shape), NOT the dashboard-RPC `sender_handle`. A
+    // regression back to sender_handle-only rendered every digest sender
+    // as @unknown.
+    const [primary] = digestConversations([row({ id: '1', sender: 'real-sender' })])
+    expect(primary!.senders).toEqual(['real-sender'])
+    const legacyRow = row({ id: '2' }) as Record<string, unknown>
+    delete legacyRow['sender']
+    legacyRow['sender_handle'] = 'legacy-sender'
+    const [fallback] = digestConversations([legacyRow as never])
+    expect(fallback!.senders).toEqual(['legacy-sender'])
   })
 
   it('flattens whitespace and truncates long snippets', () => {
@@ -48,7 +62,7 @@ describe('formatters', () => {
   it('session-start digest states identity, counts, and skill-directed triage', () => {
     const text = formatSessionStart('demo-agent', [
       row({ id: '1' }),
-      row({ id: '2', conversation_id: 'grp_g', sender_handle: 'aleph-null' }),
+      row({ id: '2', conversation_id: 'grp_g', sender: 'aleph-null' }),
     ])
     expect(text).toContain('You are @demo-agent on AgentChat.')
     expect(text).toContain('2 unread messages in 2 conversations:')
