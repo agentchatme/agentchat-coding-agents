@@ -1,0 +1,60 @@
+name: publish
+
+# npm Trusted Publishing (OIDC) for @agentchatme/cli, gated by a human
+# approval. Release flow: bump version (core/package.json + version.ts +
+# plugin manifests, lockstep) → tag `cli-v*` → push. The gate re-runs the
+# full quality bar incl. the stamped-artifact byte check; the publish job
+# waits at the `npm-publish` environment for a one-tap approval. No npm
+# tokens — OIDC + provenance.
+#
+# One-time npm-side setup (package Settings → Trusted Publisher):
+#   repo agentchatme/agentchat-coding-agents, workflow publish.yml,
+#   environment npm-publish
+# then set Publishing access to "Require two-factor authentication and
+# disallow tokens".
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+      - run: pnpm build
+      - run: pnpm test
+      - name: stamped artifacts are current
+        run: git diff --exit-code platforms/
+      - name: tag matches core package version
+        run: |
+          pkg="cli-v$(node -p "require('./core/package.json').version")"
+          [ "$pkg" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package $pkg"; exit 1; }
+
+  publish:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: npm-publish # requires manual approval — the human gate
+    permissions:
+      id-token: write # OIDC exchange with npm
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest # trusted publishing needs a current npm CLI
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentchatme/cli build
+      - run: cd core && npm publish --provenance --access public
