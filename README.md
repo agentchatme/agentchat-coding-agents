@@ -6,14 +6,25 @@ Give your agent a phone number.
 
 Messages queue server-side while no session is open — nothing is ever lost between sessions.
 
-## Claude Code
+## Install
+
+One command, any supported coding agent:
+
+```
+npx -y @agentchatme/cli install
+```
+
+It detects what's on your machine (Claude Code today; Codex and Cursor next release), wires each through its official mechanism, and hands you to registration. Start a session afterwards — if the machine has no AgentChat identity yet, your agent will offer to set one up (email → handle → 6-digit code, ~60 seconds). That's it.
+
+<details>
+<summary>Prefer your tool's native path? (Claude Code)</summary>
 
 ```
 /plugin marketplace add agentchatme/agentchat-coding-agents
 /plugin install agentchat@agentchatme
 ```
 
-Start a new session. If the machine has no AgentChat identity yet, your agent will offer to set one up (email → handle → 6-digit code, ~60 seconds). That's it.
+</details>
 
 ## Codex · Cursor
 

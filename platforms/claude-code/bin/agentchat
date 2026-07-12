@@ -538,8 +538,8 @@ function getErrorMap() {
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path6, errorMaps, issueData } = params;
-  const fullPath = [...path6, ...issueData.path || []];
+  const { data, path: path7, errorMaps, issueData } = params;
+  const fullPath = [...path7, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -655,11 +655,11 @@ var errorUtil;
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path6, key) {
+  constructor(parent, value, path7, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path6;
+    this._path = path7;
     this._key = key;
   }
   get path() {
@@ -4843,8 +4843,8 @@ var HttpTransport = class {
     }
     this.fetchFn = f.bind(globalThis);
   }
-  async request(method, path6, opts = {}) {
-    const url = `${this.baseUrl}${path6}`;
+  async request(method, path7, opts = {}) {
+    const url = `${this.baseUrl}${path7}`;
     const policy = resolveRetryPolicy(opts.retry, this.retry);
     const canRetry = isRetryEligible(method, opts.idempotencyKey, opts.retry);
     const maxAttempts = canRetry ? policy.maxRetries + 1 : 1;
@@ -5163,31 +5163,31 @@ var AgentChatClient = class _AgentChatClient {
     this.onBacklogWarning = options.onBacklogWarning;
   }
   // ─── Internal request helpers ─────────────────────────────────────────────
-  async get(path6, opts) {
-    const res = await this.http.request("GET", path6, this.toRequestOpts(opts));
+  async get(path7, opts) {
+    const res = await this.http.request("GET", path7, this.toRequestOpts(opts));
     return res.data;
   }
-  async del(path6, opts) {
-    const res = await this.http.request("DELETE", path6, this.toRequestOpts(opts));
+  async del(path7, opts) {
+    const res = await this.http.request("DELETE", path7, this.toRequestOpts(opts));
     return res.data;
   }
-  async post(path6, body, opts) {
-    const res = await this.http.request("POST", path6, {
+  async post(path7, body, opts) {
+    const res = await this.http.request("POST", path7, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async patch(path6, body, opts) {
-    const res = await this.http.request("PATCH", path6, {
+  async patch(path7, body, opts) {
+    const res = await this.http.request("PATCH", path7, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async put(path6, body, opts) {
+  async put(path7, body, opts) {
     const headers = opts?.contentType ? { "Content-Type": opts.contentType } : void 0;
-    const res = await this.http.request("PUT", path6, {
+    const res = await this.http.request("PUT", path7, {
       ...this.toRequestOpts(opts),
       body,
       rawBody: opts?.rawBody,
@@ -6320,9 +6320,107 @@ function runLogout() {
   return 0;
 }
 
-// src/commands/doctor.ts
+// src/commands/install.ts
 import * as fs5 from "fs";
+import * as os3 from "os";
 import * as path5 from "path";
+import { spawnSync } from "child_process";
+var MARKETPLACE_SLUG = "agentchatme/agentchat-coding-agents";
+var PLUGIN_REF = "agentchat@agentchatme";
+var PROBES = [
+  { key: "claude-code", label: "Claude Code", binary: "claude", configDir: ".claude" },
+  { key: "codex", label: "Codex", binary: "codex", configDir: ".codex" },
+  { key: "cursor", label: "Cursor", binary: "cursor-agent", configDir: ".cursor" }
+];
+function defaultRun(cmd, args) {
+  const result = spawnSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+  if (result.error) return null;
+  return result.status;
+}
+function binaryOnPath(binary, env) {
+  const pathVar = env["PATH"] ?? "";
+  const exts = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
+  for (const dir of pathVar.split(path5.delimiter)) {
+    if (dir.length === 0) continue;
+    for (const ext of exts) {
+      try {
+        if (fs5.existsSync(path5.join(dir, binary + ext))) return true;
+      } catch {
+      }
+    }
+  }
+  return false;
+}
+function detectPlatforms(env, home) {
+  return PROBES.filter(
+    (p) => binaryOnPath(p.binary, env) || fs5.existsSync(path5.join(home, p.configDir))
+  );
+}
+async function runInstall(deps = {}) {
+  const run = deps.run ?? defaultRun;
+  const env = deps.env ?? process.env;
+  const home = deps.homedir ?? os3.homedir();
+  const detected = detectPlatforms(env, home);
+  if (detected.length === 0) {
+    console.log(
+      [
+        "No supported coding agent found on this machine (looked for Claude Code, Codex, Cursor).",
+        "Install one of them first, then re-run: agentchat install"
+      ].join("\n")
+    );
+    return 1;
+  }
+  console.log(`Found: ${detected.map((d) => d.label).join(", ")}`);
+  let failures = 0;
+  for (const platform of detected) {
+    switch (platform.key) {
+      case "claude-code": {
+        const marketplace = run("claude", ["plugin", "marketplace", "add", MARKETPLACE_SLUG]);
+        const install = marketplace === 0 ? run("claude", ["plugin", "install", PLUGIN_REF]) : marketplace;
+        if (marketplace === 0 && install === 0) {
+          console.log("  Claude Code: plugin installed \u2713");
+        } else {
+          failures++;
+          console.log(
+            [
+              "  Claude Code: could not wire automatically \u2014 run these inside Claude Code:",
+              `    /plugin marketplace add ${MARKETPLACE_SLUG}`,
+              `    /plugin install ${PLUGIN_REF}`
+            ].join("\n")
+          );
+        }
+        break;
+      }
+      case "codex":
+        console.log(
+          "  Codex: detected \u2014 the AgentChat Codex packaging ships in the next release; this installer will wire it then."
+        );
+        break;
+      case "cursor":
+        console.log(
+          "  Cursor: detected \u2014 the AgentChat Cursor packaging ships in the next release; this installer will wire it then."
+        );
+        break;
+    }
+  }
+  if (resolveIdentity() === null) {
+    console.log(
+      [
+        "",
+        "Next: give your agent its identity \u2014",
+        "  agentchat register --email <email> --handle <handle>",
+        "or just start a session and let the agent walk you through it."
+      ].join("\n")
+    );
+  } else {
+    console.log("\nExisting identity found \u2014 this machine is already signed in (see `agentchat status`).");
+  }
+  return failures === 0 ? 0 : 1;
+}
+
+// src/commands/doctor.ts
+import * as fs6 from "fs";
+import * as path6 from "path";
 
 // src/version.ts
 var VERSION2 = "0.0.1";
@@ -6391,8 +6489,8 @@ async function runDoctor() {
   for (const platform of ["claude-code", "codex"]) {
     const file = anchorFilePath(platform);
     if (file === null) continue;
-    const hostDir = path5.dirname(file);
-    if (!fs5.existsSync(hostDir)) {
+    const hostDir = path6.dirname(file);
+    if (!fs6.existsSync(hostDir)) {
       checks.push({ name: `anchor-${platform}`, verdict: "PASS", detail: `${hostDir} absent (host not installed) \u2014 skipped` });
     } else {
       checks.push({
@@ -6403,8 +6501,8 @@ async function runDoctor() {
     }
   }
   try {
-    fs5.mkdirSync(agentchatHome(), { recursive: true });
-    fs5.accessSync(agentchatHome(), fs5.constants.W_OK);
+    fs6.mkdirSync(agentchatHome(), { recursive: true });
+    fs6.accessSync(agentchatHome(), fs6.constants.W_OK);
     checks.push({ name: "state", verdict: "PASS", detail: `${statePath()} writable` });
   } catch {
     checks.push({ name: "state", verdict: "FAIL", detail: `${agentchatHome()} is not writable` });
@@ -6441,6 +6539,7 @@ async function runAnchor(action, platform) {
 var USAGE = `agentchat ${VERSION2} \u2014 AgentChat companion CLI for coding agents
 
 Usage:
+  agentchat install                          (detect coding agents, wire the plugin)
   agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_\u2026>]
@@ -6493,6 +6592,8 @@ async function main(argv = process.argv.slice(2)) {
   }
   const requirePlatform = () => resolvePlatform(values.platform);
   switch (command) {
+    case "install":
+      return runInstall();
     case "register":
       return runRegister({
         ...values.email !== void 0 ? { email: values.email } : {},

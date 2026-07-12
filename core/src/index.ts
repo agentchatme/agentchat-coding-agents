@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util'
 import { isPlatform } from './lib/dialect.js'
 import { runSessionStartHook, runStopHook } from './commands/hook.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
+import { runInstall } from './commands/install.js'
 import { runDoctor } from './commands/doctor.js'
 import { runAnchor } from './commands/anchor-cmd.js'
 import { VERSION } from './version.js'
@@ -9,6 +10,7 @@ import { VERSION } from './version.js'
 const USAGE = `agentchat ${VERSION} — AgentChat companion CLI for coding agents
 
 Usage:
+  agentchat install                          (detect coding agents, wire the plugin)
   agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_…>]
@@ -66,6 +68,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   const requirePlatform = (): ReturnType<typeof resolvePlatform> => resolvePlatform(values.platform)
 
   switch (command) {
+    case 'install':
+      return runInstall()
+
     case 'register':
       return runRegister({
         ...(values.email !== undefined ? { email: values.email } : {}),
