@@ -19,6 +19,22 @@ on:
       - "cli-v*"
 
 jobs:
+  # Temporary diagnostic (remove once the npm pairing is proven): prints
+  # the OIDC claim fields npm matches against the trusted-publisher rule.
+  # Runs ungated — claims only, never the token itself.
+  oidc-claims:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: decode claim fields
+        run: |
+          T=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm%3Aregistry.npmjs.org" | jq -r .value)
+          PAY=$(echo "$T" | cut -d. -f2 | tr '_-' '/+' )
+          PAD=$(( (4 - ${#PAY} % 4) % 4 )); PAY="$PAY$(printf '=%.0s' $(seq 1 $PAD 2>/dev/null))"
+          echo "$PAY" | base64 -d 2>/dev/null | jq '{aud, repository, repository_owner, workflow_ref, job_workflow_ref, event_name, ref}'
+
   gate:
     runs-on: ubuntu-latest
     steps:
