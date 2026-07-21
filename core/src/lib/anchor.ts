@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import type { Platform } from './dialect.js'
+import { codexHome } from './paths.js'
 
 // ─── Instruction-file identity anchor ───────────────────────────────────────
 //
@@ -33,7 +34,9 @@ export function anchorFilePath(platform: Platform): string | null {
     case 'claude-code':
       return path.join(os.homedir(), '.claude', 'CLAUDE.md')
     case 'codex':
-      return path.join(os.homedir(), '.codex', 'AGENTS.md')
+      // Honor CODEX_HOME so the anchor lands where Codex actually reads it
+      // (and stays aligned with our config.toml / hooks.json writes).
+      return path.join(codexHome(), 'AGENTS.md')
     case 'cursor':
       return null
   }

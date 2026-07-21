@@ -25,3 +25,15 @@ export function pendingPath(): string {
 export function statePath(): string {
   return path.join(agentchatHome(), 'state.json')
 }
+
+// ─── Codex home ─────────────────────────────────────────────────────────────
+//
+// Codex reads its config from CODEX_HOME (default ~/.codex). Honoring the
+// override keeps our config.toml / hooks.json / AGENTS.md writes aligned
+// with wherever Codex actually looks — and lets tests isolate.
+
+export function codexHome(): string {
+  const override = process.env['CODEX_HOME']
+  if (override && override.trim().length > 0) return path.resolve(override)
+  return path.join(os.homedir(), '.codex')
+}

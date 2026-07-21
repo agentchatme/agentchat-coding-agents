@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { resolveIdentity } from '../lib/credentials.js'
+import { installCodex } from '../lib/codex-config.js'
 
 // ─── agentchat install — the universal front door ───────────────────────────
 //
@@ -105,11 +106,23 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
         }
         break
       }
-      case 'codex':
-        console.log(
-          '  Codex: detected — the AgentChat Codex packaging ships in the next release; this installer will wire it then.',
-        )
+      case 'codex': {
+        // Direct config: Codex has no plugin surface for always-on identity,
+        // so we write config.toml (MCP) + hooks.json + AGENTS.md ourselves,
+        // merge-safely. `bundleSrc` is this running CLI, copied to a stable
+        // path so the hooks don't depend on npx cache.
+        const bundleSrc = process.argv[1] ?? ''
+        const handle = resolveIdentity()?.handle ?? null
+        try {
+          const { actions, warnings } = installCodex(bundleSrc, handle)
+          console.log(`  Codex: wired ✓ (${actions.join(', ') || 'no changes'})`)
+          for (const w of warnings) console.log(`    ⚠ ${w}`)
+        } catch (err) {
+          failures++
+          console.log(`  Codex: wiring failed — ${String(err)}`)
+        }
         break
+      }
       case 'cursor':
         console.log(
           '  Cursor: detected — the AgentChat Cursor packaging ships in the next release; this installer will wire it then.',

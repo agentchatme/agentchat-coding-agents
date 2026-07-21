@@ -12,7 +12,8 @@ import {
   writePending,
 } from '../lib/credentials.js'
 import { credentialsPath } from '../lib/paths.js'
-import { installAnchor, removeAnchor, hasAnchor, anchorFilePath } from '../lib/anchor.js'
+import { installAnchor, removeAnchor, hasAnchor, anchorFilePath, upsertAnchorBlock } from '../lib/anchor.js'
+import { removeCodex, renderCodexAgents } from '../lib/codex-config.js'
 import { syncPeek } from '../lib/wire.js'
 import type { Platform } from '../lib/dialect.js'
 
@@ -88,17 +89,28 @@ const RESTART_HINT =
 /** Install anchors for every platform whose host directory exists. */
 function autoAnchor(handle: string): string[] {
   const lines: string[] = []
-  const candidates: Platform[] = ['claude-code', 'codex']
-  for (const platform of candidates) {
-    const file = anchorFilePath(platform)
-    if (file === null) continue
-    const hostDir = path.dirname(file) // NOT '/'-slicing — Windows paths use backslashes
-    if (!fs.existsSync(hostDir)) continue
+  // Claude Code gets the generic identity anchor (its skill carries etiquette).
+  const ccFile = anchorFilePath('claude-code')
+  if (ccFile !== null && fs.existsSync(path.dirname(ccFile))) {
     try {
-      const result = installAnchor(platform, handle)
-      lines.push(`  anchor ${platform}: written → ${result.path}`)
+      installAnchor('claude-code', handle)
+      lines.push(`  anchor claude-code: written → ${ccFile}`)
     } catch (err) {
-      lines.push(`  anchor ${platform}: FAILED — ${String(err)}`)
+      lines.push(`  anchor claude-code: FAILED — ${String(err)}`)
+    }
+  }
+  // Codex gets the richer AGENTS.md (identity + always-on etiquette). Only
+  // refresh it if the config footprint already exists — writing a bare
+  // AGENTS.md without the MCP server/hooks would be half-wired. Full wiring
+  // is `agentchat install`.
+  const codexAgents = anchorFilePath('codex')
+  if (codexAgents !== null && fs.existsSync(codexAgents)) {
+    try {
+      const existing = fs.readFileSync(codexAgents, 'utf-8')
+      fs.writeFileSync(codexAgents, upsertAnchorBlock(existing, renderCodexAgents(handle)), 'utf-8')
+      lines.push(`  AGENTS.md codex: refreshed → ${codexAgents}`)
+    } catch (err) {
+      lines.push(`  AGENTS.md codex: FAILED — ${String(err)}`)
     }
   }
   return lines
@@ -427,13 +439,19 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
 export function runLogout(): number {
   const removed = clearCredentials()
   const reports: string[] = []
-  for (const platform of ['claude-code', 'codex'] as const) {
-    try {
-      const result = removeAnchor(platform)
-      if (result.action === 'removed') reports.push(`  anchor ${platform}: removed`)
-    } catch {
-      reports.push(`  anchor ${platform}: could not clean up (remove the agentchat block manually)`)
-    }
+  // Claude Code anchor lives standalone; Codex has a whole config footprint
+  // (config.toml + hooks.json + AGENTS.md) that removeCodex cleans merge-safely.
+  try {
+    const result = removeAnchor('claude-code')
+    if (result.action === 'removed') reports.push('  Claude Code anchor: removed')
+  } catch {
+    reports.push('  Claude Code anchor: could not clean up (remove the agentchat block manually)')
+  }
+  try {
+    const codexRemoved = removeCodex()
+    if (codexRemoved.length > 0) reports.push(`  Codex: removed ${codexRemoved.join(', ')}`)
+  } catch {
+    reports.push('  Codex: could not fully clean up (check ~/.codex/config.toml + hooks.json)')
   }
   console.log(
     [removed ? 'Signed out — local credentials deleted.' : 'Nothing to sign out of.', ...reports].join(

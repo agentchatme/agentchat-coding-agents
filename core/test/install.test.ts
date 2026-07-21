@@ -11,11 +11,13 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-install-'))
   fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-bin-'))
   process.env['AGENTCHAT_HOME'] = home // keep resolveIdentity off the real machine
+  process.env['CODEX_HOME'] = path.join(home, '.codex') // keep codex wiring off the real ~/.codex
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
 afterEach(() => {
   delete process.env['AGENTCHAT_HOME']
+  delete process.env['CODEX_HOME']
   vi.restoreAllMocks()
   fs.rmSync(home, { recursive: true, force: true })
   fs.rmSync(fakeBinDir, { recursive: true, force: true })
@@ -92,7 +94,7 @@ describe('runInstall', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('reports codex/cursor as detected-but-next-release without running anything', async () => {
+  it('wires Codex directly (no platform CLI) and reports Cursor as next-release', async () => {
     fakeBinary('codex')
     fs.mkdirSync(path.join(home, '.cursor'))
     const logs: string[] = []
@@ -107,9 +109,14 @@ describe('runInstall', () => {
       },
     })
     expect(code).toBe(0)
-    expect(calls).toHaveLength(0)
+    expect(calls).toHaveLength(0) // Codex is direct-config, not a platform-CLI call
     const output = logs.join('\n')
-    expect(output).toContain('Codex: detected')
+    expect(output).toContain('Codex: wired')
+    // config actually landed in the isolated CODEX_HOME
+    expect(fs.existsSync(path.join(home, '.codex', 'config.toml'))).toBe(true)
+    expect(fs.readFileSync(path.join(home, '.codex', 'config.toml'), 'utf-8')).toContain(
+      '[mcp_servers.agentchat]',
+    )
     expect(output).toContain('Cursor: detected')
     expect(output).toContain('next release')
   })
