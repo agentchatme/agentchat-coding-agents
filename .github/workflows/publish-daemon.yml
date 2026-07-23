@@ -1,0 +1,58 @@
+name: publish-daemon
+
+# OIDC trusted publishing for @agentchatme/daemon, gated by a human approval —
+# same model as publish.yml (the CLI), on its own tag so the daemon versions
+# independently.
+#
+# ONE-TIME npm setup (package owner, on npmjs.com) BEFORE the first tag:
+#   configure a Trusted Publisher for @agentchatme/daemon →
+#   repo agentchatme/agentchat-coding-agents, workflow publish-daemon.yml,
+#   environment npm-publish. npm allows this for a not-yet-published package.
+#
+# Release flow: bump daemon/package.json version → tag `daemon-v<version>` →
+# push. The gate re-runs the quality bar; the publish job waits at the
+# `npm-publish` environment for a one-tap approval. Auth is OIDC — no tokens.
+
+on:
+  push:
+    tags:
+      - "daemon-v*"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm type-check
+      - run: pnpm build
+      - run: pnpm test
+      - name: tag matches daemon package version
+        run: |
+          pkg="daemon-v$(node -p "require('./daemon/package.json').version")"
+          [ "$pkg" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME != package $pkg"; exit 1; }
+
+  publish:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: npm-publish # requires manual approval — the human gate
+    permissions:
+      id-token: write # OIDC exchange with npm (trusted publishing)
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest # OIDC exchange needs a current npm CLI
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentchatme/daemon build
+      - run: cd daemon && npm publish --provenance --access public
