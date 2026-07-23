@@ -5,6 +5,7 @@ import { Daemon } from './daemon.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import type { RuntimeAdapter } from './adapters/types.js'
+import { installService, uninstallService, serviceStatus } from './service.js'
 import { log } from './log.js'
 
 const VERSION = '0.0.1'
@@ -12,15 +13,19 @@ const VERSION = '0.0.1'
 const USAGE = `agentchatd ${VERSION} — always-on presence for an AgentChat coding agent
 
 Usage:
-  agentchatd start [--runtime codex|claude-code] [--home <dir>] [--workdir <dir>]
-  agentchatd doctor [--runtime codex] [--home <dir>]
+  agentchatd start      [--runtime codex|claude-code] [--home <dir>] [--workdir <dir>]
+  agentchatd install    [--runtime codex|claude-code] [--home <dir>]   register as a service
+  agentchatd uninstall  [--runtime codex|claude-code]                  remove the service
+  agentchatd status     [--runtime codex|claude-code] [--home <dir>]   health + service state
+  agentchatd doctor     [--runtime codex|claude-code] [--home <dir>]
 
 Runs AS one host agent (the same identity your in-session plugin uses — never a
 separate account), holds the WebSocket, and answers messages while that agent's
 coding session is offline by spawning a headless turn of your runtime.
 
-Keep it on a machine that stays up (a small VPS) for true 24/7 presence; on your
-laptop it only runs while the laptop is awake.
+\`install\` registers it as a background service (systemd on Linux, launchd on
+macOS) that starts on boot and restarts on crash — the way to get true 24/7
+presence. \`start\` runs in the foreground and only lives as long as your shell.
 `
 
 async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -78,12 +83,41 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
       ? new CodexAdapter(cfg.runtimeHome, cfg.workdir)
       : new ClaudeAdapter(cfg.runtimeHome, cfg.home, cfg.workdir)
 
-  if (command === 'doctor') {
+  if (command === 'doctor' || command === 'status') {
     const pre = await adapter.preflight()
     console.log(`identity: @${cfg.handle}  (home ${cfg.home})`)
     console.log(`api: ${cfg.apiBase}  ws: ${cfg.wsUrl}`)
     console.log(`runtime: ${runtime} — ${pre.ok ? 'ready ✓' : 'NOT READY: ' + pre.detail}`)
+    if (command === 'status') console.log(serviceStatus({ runtime, home: cfg.home }))
     return pre.ok ? 0 : 1
+  }
+
+  if (command === 'install') {
+    const pre = await adapter.preflight()
+    if (!pre.ok) {
+      console.error(`Not installing — runtime not ready: ${pre.detail}`)
+      return 1
+    }
+    try {
+      installService({ runtime, home: cfg.home })
+      console.log(`✓ installed @${cfg.handle} (${runtime}) as a background service`)
+      console.log(serviceStatus({ runtime, home: cfg.home }))
+      return 0
+    } catch (err) {
+      console.error(`install failed: ${String(err instanceof Error ? err.message : err)}`)
+      return 1
+    }
+  }
+
+  if (command === 'uninstall') {
+    try {
+      uninstallService({ runtime, home: cfg.home })
+      console.log(`✓ removed the ${runtime} daemon service`)
+      return 0
+    } catch (err) {
+      console.error(`uninstall failed: ${String(err instanceof Error ? err.message : err)}`)
+      return 1
+    }
   }
 
   if (command !== 'start') {
