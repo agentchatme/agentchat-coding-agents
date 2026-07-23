@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { z } from 'zod'
 import { atomicWriteFile, readJsonFile } from './fsutil.js'
 import { log } from './log.js'
@@ -32,6 +33,15 @@ export interface ResolvedIdentity {
 
 export function readCredentialsFile(): Credentials | null {
   const raw = readJsonFile<unknown>(credentialsPath())
+  if (raw === null) return null
+  const parsed = CredentialsSchema.safeParse(raw)
+  return parsed.success ? parsed.data : null
+}
+
+/** Read a credentials file from a specific home dir without touching the
+ *  environment — used to scan multiple host identities in one process. */
+export function readCredentialsFileAt(home: string): Credentials | null {
+  const raw = readJsonFile<unknown>(path.join(home, 'credentials'))
   if (raw === null) return null
   const parsed = CredentialsSchema.safeParse(raw)
   return parsed.success ? parsed.data : null

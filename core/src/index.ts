@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { isPlatform } from './lib/dialect.js'
+import { bindHostHome } from './lib/paths.js'
 import { runSessionStartHook, runStopHook, runUserPromptHook } from './commands/hook.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
 import { runInstall } from './commands/install.js'
@@ -66,6 +67,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
 
   const requirePlatform = (): ReturnType<typeof resolvePlatform> => resolvePlatform(values.platform)
+
+  // Identity lives per-host: `--platform codex` binds this process to
+  // Codex's scoped home so register/login/status/etc. read and write the
+  // right agent. No flag → the legacy machine-global home (and status/
+  // logout scan all hosts). An explicit AGENTCHAT_HOME still wins inside
+  // bindHostHome.
+  if (values.platform !== undefined && isPlatform(values.platform)) {
+    bindHostHome(values.platform)
+  }
 
   switch (command) {
     case 'install':

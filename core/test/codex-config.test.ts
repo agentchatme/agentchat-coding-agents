@@ -132,9 +132,11 @@ describe('installCodex end to end', () => {
     const cfg = fs.readFileSync(codexConfigPath(), 'utf-8')
     expect(cfg).toContain('[mcp_servers.agentchat]')
     expect(cfg).toContain('default_tools_approval_mode = "approve"')
-    // The key is FORWARDED by name (env_vars), never written as a value —
-    // the actual secret lives in ~/.agentchat/credentials.
-    expect(cfg).toContain('env_vars')
+    // The MCP server is bound to the CODEX-SCOPED identity home (so the
+    // Codex agent is distinct from a Claude agent). No secret is written —
+    // the key lives in that home's credentials file.
+    expect(cfg).toContain('[mcp_servers.agentchat.env]')
+    expect(cfg).toContain(path.join(codex, 'agentchat')) // AGENTCHAT_HOME = <codex>/agentchat
     expect(cfg).not.toMatch(/AGENTCHAT_API_KEY\s*=\s*"/) // no inline key value
 
     // hooks.json points at the stable bundle

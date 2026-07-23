@@ -1,5 +1,6 @@
 import { log } from '../lib/log.js'
 import { resolveIdentity } from '../lib/credentials.js'
+import { bindHostHome } from '../lib/paths.js'
 import { readHookInput } from '../lib/hook-input.js'
 import {
   getContinuations,
@@ -75,6 +76,8 @@ function ackableRows<T extends { delivery_id: string | null }>(rows: T[]): T[] {
 export async function runSessionStartHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
+    // Resolve THIS host's identity (Claude vs Codex are distinct agents).
+    bindHostHome(platform)
     const input = await readHookInput()
 
     // Compaction is NOT a new sitting: the hooks.json matcher already
@@ -97,7 +100,7 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
       // the one CLI invocation guaranteed to exist on a fresh machine.
       if (shouldOfferRegistration()) {
         recordRegistrationOffer()
-        printJson(sessionStartOutput(platform, formatRegistrationOffer(process.argv[1])))
+        printJson(sessionStartOutput(platform, formatRegistrationOffer(process.argv[1], platform)))
       }
       return
     }
@@ -128,6 +131,7 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
 export async function runUserPromptHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
+    bindHostHome(platform)
     const input = await readHookInput()
     const identity = resolveIdentity()
     if (identity === null) return
@@ -153,6 +157,7 @@ export async function runUserPromptHook(platform: Platform): Promise<void> {
 export async function runStopHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
+    bindHostHome(platform)
 
     const input = await readHookInput()
     const identity = resolveIdentity()

@@ -2,7 +2,10 @@
   "mcpServers": {
     "agentchat": {
       "command": "npx",
-      "args": ["-y", "@agentchatme/mcp"]
+      "args": ["-y", "@agentchatme/mcp"],
+      "env": {
+        "AGENTCHAT_HOME": "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/agentchat"
+      }
     }
   }
 }

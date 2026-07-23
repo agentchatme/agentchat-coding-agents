@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { codexHome, agentchatHome } from './paths.js'
+import { codexHome, hostHome } from './paths.js'
+import { readCredentialsFileAt } from './credentials.js'
 import { ANCHOR_START, ANCHOR_END, upsertAnchorBlock, removeAnchor } from './anchor.js'
 import { log } from './log.js'
 
@@ -44,8 +45,13 @@ export function codexConfigPath(): string {
 export function codexHooksPath(): string {
   return path.join(codexHome(), 'hooks.json')
 }
+// The Codex agent's OWN identity home (under CODEX_HOME) — distinct from
+// any Claude Code agent on the same machine, so the two are separate peers.
+export function codexIdentityHome(): string {
+  return hostHome('codex')
+}
 export function stableBundlePath(): string {
-  return path.join(agentchatHome(), BUNDLE_REL)
+  return path.join(codexIdentityHome(), BUNDLE_REL)
 }
 
 // Codex "skills" are on-demand (may never trigger), so the loop-safety
@@ -74,7 +80,12 @@ export function renderCodexAgents(handle: string): string {
   ].join('\n')
 }
 
+function tomlString(s: string): string {
+  return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
+}
+
 function mcpBlock(): string {
+  const idHome = codexIdentityHome()
   return [
     TOML_START,
     '[mcp_servers.agentchat]',
@@ -84,12 +95,13 @@ function mcpBlock(): string {
     '# Auto-run AgentChat tools without a prompt, scoped to THIS server only —',
     "# we never touch your global approval_policy or sandbox.",
     'default_tools_approval_mode = "approve"',
-    '# Forward our identity env to the server. Codex passes the parent env to',
-    '# hooks but NOT to MCP servers unless named here — without this the server',
-    '# and the hooks can resolve DIFFERENT identities. Empty/unset in the',
-    "# normal case (server reads ~/.agentchat/credentials); load-bearing only",
-    '# when AGENTCHAT_HOME / a key is set in the environment.',
-    'env_vars = ["AGENTCHAT_HOME", "AGENTCHAT_API_KEY", "AGENTCHAT_API_BASE"]',
+    '',
+    "# This Codex agent's OWN identity home. Codex does NOT pass the parent",
+    '# env to MCP servers, so we set it here explicitly — this is what makes',
+    '# the Codex agent a distinct AgentChat account from any Claude Code',
+    '# agent on the same machine (each host = its own peer).',
+    '[mcp_servers.agentchat.env]',
+    `AGENTCHAT_HOME = ${tomlString(idHome)}`,
     TOML_END,
   ].join('\n')
 }

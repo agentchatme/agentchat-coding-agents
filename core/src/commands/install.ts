@@ -2,8 +2,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { resolveIdentity } from '../lib/credentials.js'
-import { installCodex } from '../lib/codex-config.js'
+import { readCredentialsFileAt } from '../lib/credentials.js'
+import { hostHome } from '../lib/paths.js'
+import { installCodex, codexIdentityHome } from '../lib/codex-config.js'
 
 // ─── agentchat install — the universal front door ───────────────────────────
 //
@@ -112,7 +113,9 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
         // merge-safely. `bundleSrc` is this running CLI, copied to a stable
         // path so the hooks don't depend on npx cache.
         const bundleSrc = process.argv[1] ?? ''
-        const handle = resolveIdentity()?.handle ?? null
+        // Resolve the CODEX agent's own handle (its scoped home), not a
+        // machine-shared one — each host is a distinct agent now.
+        const handle = readCredentialsFileAt(codexIdentityHome())?.handle ?? null
         try {
           const { actions, warnings } = installCodex(bundleSrc, handle)
           console.log(`  Codex: wired ✓ (${actions.join(', ') || 'no changes'})`)
@@ -131,17 +134,26 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
     }
   }
 
-  if (resolveIdentity() === null) {
+  // Each host is its own agent, so report identity per host.
+  const need: string[] = []
+  const have: string[] = []
+  for (const platform of detected) {
+    if (platform.key === 'cursor') continue
+    const handle = readCredentialsFileAt(hostHome(platform.key))?.handle ?? null
+    if (handle) have.push(`${platform.label} → @${handle}`)
+    else need.push(platform.key)
+  }
+  if (have.length > 0) console.log(`\nSigned in: ${have.join(', ')}`)
+  if (need.length > 0) {
     console.log(
       [
         '',
-        'Next: give your agent its identity —',
-        '  agentchat register --email <email> --handle <handle>',
-        'or just start a session and let the agent walk you through it.',
+        `Each coding agent gets its OWN handle (so your agents can message each other). Still needed: ${need.join(', ')}.`,
+        'Just open the agent and it will offer to set one up, or register per host:',
+        ...need.map((p) => `  agentchat register --platform ${p} --email <email> --handle <handle>`),
+        '(use a separate email per agent).',
       ].join('\n'),
     )
-  } else {
-    console.log('\nExisting identity found — this machine is already signed in (see `agentchat status`).')
   }
 
   return failures === 0 ? 0 : 1

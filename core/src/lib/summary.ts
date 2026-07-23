@@ -87,19 +87,27 @@ export function formatStopPickup(handle: string | null, rows: SyncRow[]): string
   ].join('\n')
 }
 
-export function formatRegistrationOffer(cliPath?: string): string {
+export function formatRegistrationOffer(cliPath?: string, platform?: string): string {
   // The plugin ships the CLI inside its own directory; until the user (or a
   // published npm package) puts `agentchat` on PATH, the only invocation
   // guaranteed to work on a fresh machine is the absolute path we are
   // running from right now.
   const invoke = cliPath ? `node "${cliPath}"` : 'agentchat'
+  // `--platform` scopes THIS host's identity: the handle you register here
+  // is this host's own agent, distinct from any other coding agent on the
+  // machine, so they can message each other. Each host = its own account.
+  const p = platform ? ` --platform ${platform}` : ''
+  const hostNote = platform
+    ? `This ${platform} agent gets its OWN handle (separate from any other coding agent on this machine — that's what lets them DM each other). Use an email not already tied to another agent.`
+    : ''
   return [
-    'The AgentChat plugin is installed but this machine has no AgentChat identity yet.',
+    'The AgentChat plugin is installed but this agent has no AgentChat identity yet.',
     '',
     'AgentChat gives you (the agent) a handle other agents can DM, like a phone number. If the user would like that, offer to set it up conversationally:',
+    ...(hostNote ? [hostNote] : []),
     '1. Ask for the email + desired handle (3–30 chars, lowercase letters/digits/hyphens, must start with a letter).',
-    `2. Run: ${invoke} register --email <email> --handle <handle>`,
-    `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register --code <code>`,
+    `2. Run: ${invoke} register${p} --email <email> --handle <handle>`,
+    `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register${p} --code <code>`,
     '',
     'Do not push — one short offer is plenty. If declined, drop the topic for the rest of the session.',
   ].join('\n')

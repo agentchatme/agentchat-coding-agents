@@ -7,11 +7,12 @@ import {
   clearCredentials,
   clearPending,
   readPending,
+  readCredentialsFileAt,
   resolveIdentity,
   writeCredentials,
   writePending,
 } from '../lib/credentials.js'
-import { credentialsPath } from '../lib/paths.js'
+import { credentialsPath, hostHome, legacyMachineHome } from '../lib/paths.js'
 import { installAnchor, removeAnchor, hasAnchor, anchorFilePath, upsertAnchorBlock } from '../lib/anchor.js'
 import { removeCodex, renderCodexAgents } from '../lib/codex-config.js'
 import { syncPeek } from '../lib/wire.js'
@@ -369,12 +370,87 @@ export async function runRecover(opts: {
   }
 }
 
+// Run `fn` with AGENTCHAT_HOME temporarily pointed at `home`, then restore.
+// Sequential use only (global env) — the status scan awaits one host at a time.
+async function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env['AGENTCHAT_HOME']
+  process.env['AGENTCHAT_HOME'] = home
+  try {
+    return await fn()
+  } finally {
+    if (prev === undefined) delete process.env['AGENTCHAT_HOME']
+    else process.env['AGENTCHAT_HOME'] = prev
+  }
+}
+
+const STATUS_HOSTS: Array<[Platform, string]> = [
+  ['claude-code', 'Claude Code'],
+  ['codex', 'Codex'],
+]
+
 export async function runStatus(opts: { json?: boolean }): Promise<number> {
+  // A bound home (from `--platform`, or an explicit AGENTCHAT_HOME) → the
+  // single-identity view. No host → scan every host's identity, since they
+  // are now separate agents.
+  const bound = (process.env['AGENTCHAT_HOME'] ?? '').trim().length > 0
+  if (bound) return statusOne(opts.json ?? false)
+
+  const rows: Array<{ label: string; home: string }> = []
+  for (const [platform, label] of STATUS_HOSTS) {
+    const home = hostHome(platform)
+    if (readCredentialsFileAt(home) !== null) rows.push({ label, home })
+  }
+  const legacy = readCredentialsFileAt(legacyMachineHome())
+
+  if (rows.length === 0 && legacy === null) {
+    console.log(
+      opts.json
+        ? JSON.stringify({ identities: [] })
+        : 'No AgentChat identities on this machine yet. Each coding agent gets its own — open Claude Code or Codex and it will offer to set one up, or run: agentchat register --platform <claude-code|codex> --email <email> --handle <handle>',
+    )
+    return 0
+  }
+
+  if (opts.json) {
+    const out: unknown[] = []
+    for (const r of rows) out.push({ host: r.label, ...(await withHome(r.home, () => statusData())) })
+    if (legacy) out.push({ host: 'legacy (~/.agentchat, shared)', handle: legacy.handle, legacy: true })
+    console.log(JSON.stringify({ identities: out }))
+    return 0
+  }
+
+  for (const r of rows) {
+    console.log(`── ${r.label} ──`)
+    await withHome(r.home, () => statusOne(false))
+  }
+  if (legacy) {
+    console.log('── legacy (~/.agentchat, machine-shared) ──')
+    console.log(`@${legacy.handle} — a pre-per-host identity; \`agentchat install\` migrates it into a host.`)
+  }
+  return 0
+}
+
+interface StatusData {
+  handle: string
+  status: string
+  unread: number
+}
+
+async function statusData(): Promise<StatusData> {
+  const identity = resolveIdentity()
+  if (identity === null) return { handle: '?', status: 'unconfigured', unread: 0 }
+  const client = new AgentChatClient({ apiKey: identity.apiKey, baseUrl: identity.apiBase })
+  const me = await client.getMe()
+  const rows = await syncPeek({ apiKey: identity.apiKey, apiBase: identity.apiBase }, { limit: 100 })
+  return { handle: me.handle, status: me.status ?? 'unknown', unread: rows.length }
+}
+
+async function statusOne(json: boolean): Promise<number> {
   const identity = resolveIdentity()
   const pending = readPending()
 
   if (identity === null) {
-    if (opts.json) {
+    if (json) {
       console.log(
         JSON.stringify({ configured: false, pending: pending !== null, pending_kind: pending?.kind ?? null }),
       )
@@ -387,7 +463,7 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
         `No identity yet, but a registration for @${pending.handle ?? '?'} is waiting on its emailed code — finish with: agentchat register --code <code>`,
       )
     } else {
-      console.log('No AgentChat identity on this machine. Set one up with: agentchat register')
+      console.log('No AgentChat identity for this host. Set one up with: agentchat register')
     }
     return 0
   }
@@ -405,7 +481,7 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
       codex: hasAnchor('codex'),
     }
 
-    if (opts.json) {
+    if (json) {
       console.log(
         JSON.stringify({
           configured: true,
@@ -437,26 +513,68 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
 }
 
 export function runLogout(): number {
-  const removed = clearCredentials()
+  // With `--platform`, AGENTCHAT_HOME is bound → log out just that host.
+  // Without, log out every host + the legacy machine-global identity.
+  const bound = (process.env['AGENTCHAT_HOME'] ?? '').trim().length > 0
   const reports: string[] = []
-  // Claude Code anchor lives standalone; Codex has a whole config footprint
-  // (config.toml + hooks.json + AGENTS.md) that removeCodex cleans merge-safely.
-  try {
-    const result = removeAnchor('claude-code')
-    if (result.action === 'removed') reports.push('  Claude Code anchor: removed')
-  } catch {
-    reports.push('  Claude Code anchor: could not clean up (remove the agentchat block manually)')
+  let any = false
+
+  const logoutHost = (platform: Platform, label: string): void => {
+    const home = hostHome(platform)
+    const prev = process.env['AGENTCHAT_HOME']
+    process.env['AGENTCHAT_HOME'] = home
+    try {
+      if (clearCredentials()) {
+        any = true
+        reports.push(`  ${label}: credentials deleted`)
+      }
+      if (platform === 'claude-code') {
+        const r = removeAnchor('claude-code')
+        if (r.action === 'removed') reports.push('  Claude Code: anchor removed')
+      } else if (platform === 'codex') {
+        const removed = removeCodex()
+        if (removed.length > 0) reports.push(`  Codex: removed ${removed.join(', ')}`)
+      }
+    } catch {
+      reports.push(`  ${label}: could not fully clean up`)
+    } finally {
+      if (prev === undefined) delete process.env['AGENTCHAT_HOME']
+      else process.env['AGENTCHAT_HOME'] = prev
+    }
   }
-  try {
-    const codexRemoved = removeCodex()
-    if (codexRemoved.length > 0) reports.push(`  Codex: removed ${codexRemoved.join(', ')}`)
-  } catch {
-    reports.push('  Codex: could not fully clean up (check ~/.codex/config.toml + hooks.json)')
+
+  if (bound) {
+    // The bound home is already active; clear it directly.
+    if (clearCredentials()) any = true
+    try {
+      removeAnchor('claude-code')
+    } catch {
+      /* best-effort */
+    }
+    try {
+      removeCodex()
+    } catch {
+      /* best-effort */
+    }
+  } else {
+    logoutHost('claude-code', 'Claude Code')
+    logoutHost('codex', 'Codex')
+    // Legacy machine-global identity, if any.
+    const prev = process.env['AGENTCHAT_HOME']
+    process.env['AGENTCHAT_HOME'] = legacyMachineHome()
+    try {
+      if (clearCredentials()) {
+        any = true
+        reports.push('  legacy (~/.agentchat): credentials deleted')
+      }
+    } finally {
+      if (prev === undefined) delete process.env['AGENTCHAT_HOME']
+      else process.env['AGENTCHAT_HOME'] = prev
+    }
   }
+
   console.log(
-    [removed ? 'Signed out — local credentials deleted.' : 'Nothing to sign out of.', ...reports].join(
-      '\n',
-    ),
+    [any ? 'Signed out.' : 'Nothing to sign out of.', ...reports].join('\n'),
   )
   return 0
 }

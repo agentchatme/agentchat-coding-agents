@@ -11,13 +11,15 @@ beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-install-'))
   fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-bin-'))
   process.env['AGENTCHAT_HOME'] = home // keep resolveIdentity off the real machine
-  process.env['CODEX_HOME'] = path.join(home, '.codex') // keep codex wiring off the real ~/.codex
+  process.env['CODEX_HOME'] = path.join(home, '.codex') // codex host home off the real ~/.codex
+  process.env['CLAUDE_CONFIG_DIR'] = path.join(home, '.claude') // claude host home off the real ~/.claude
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
 afterEach(() => {
   delete process.env['AGENTCHAT_HOME']
   delete process.env['CODEX_HOME']
+  delete process.env['CLAUDE_CONFIG_DIR']
   vi.restoreAllMocks()
   fs.rmSync(home, { recursive: true, force: true })
   fs.rmSync(fakeBinDir, { recursive: true, force: true })
@@ -133,19 +135,22 @@ describe('runInstall', () => {
     expect(logs.join('\n')).toContain('No supported coding agent found')
   })
 
-  it('points to registration when no identity exists, and to status when one does', async () => {
+  it('points to per-host registration when no identity, and shows the handle when present', async () => {
     fakeBinary('claude')
     const logs: string[] = []
     vi.mocked(console.log).mockImplementation((msg: unknown) => logs.push(String(msg)))
     await runInstall({ env: { PATH: fakeBinDir } as NodeJS.ProcessEnv, homedir: home, run: () => 0 })
-    expect(logs.join('\n')).toContain('agentchat register')
+    expect(logs.join('\n')).toContain('agentchat register --platform claude-code')
 
     logs.length = 0
+    // Credential lives in the CLAUDE host home now, not a machine-global file.
+    const claudeHome = path.join(home, '.claude', 'agentchat')
+    fs.mkdirSync(claudeHome, { recursive: true })
     fs.writeFileSync(
-      path.join(home, 'credentials'),
+      path.join(claudeHome, 'credentials'),
       JSON.stringify({ api_key: 'ac_live_' + 'x'.repeat(32), handle: 'demo' }),
     )
     await runInstall({ env: { PATH: fakeBinDir } as NodeJS.ProcessEnv, homedir: home, run: () => 0 })
-    expect(logs.join('\n')).toContain('already signed in')
+    expect(logs.join('\n')).toContain('Signed in: Claude Code → @demo')
   })
 })
