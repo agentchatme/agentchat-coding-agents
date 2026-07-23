@@ -26,6 +26,11 @@ interface FakeApi {
   acks: string[]
   syncCalls: number
   failAck: boolean
+  // Reply-coordination (daemon coexistence)
+  activeCalls: number
+  claims: string[]
+  /** Message ids the daemon "already owns" — claim returns claimed:false. */
+  denyClaim: Set<string>
 }
 
 function makeRow(n: number, conversation = 'conv_e2e'): Record<string, unknown> {
@@ -46,6 +51,9 @@ async function startFakeApi(): Promise<FakeApi> {
     acks: [],
     syncCalls: 0,
     failAck: false,
+    activeCalls: 0,
+    claims: [],
+    denyClaim: new Set<string>(),
   }
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -76,6 +84,21 @@ async function startFakeApi(): Promise<FakeApi> {
     }
     if (req.method === 'GET' && url.pathname === '/v1/agents/me') {
       return send(200, { handle: 'demo-agent', status: 'active' })
+    }
+    if (req.method === 'PUT' && url.pathname === '/v1/reply/active') {
+      api.activeCalls = (api.activeCalls ?? 0) + 1
+      return send(200, { ok: true, expires_in: 90 })
+    }
+    if (req.method === 'POST' && url.pathname === '/v1/reply/claim') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        const id = JSON.parse(body).message_id as string
+        api.claims?.push(id)
+        // claimed:false = the daemon already owns this message.
+        send(200, { claimed: !api.denyClaim?.has(id) })
+      })
+      return
     }
     return send(404, { code: 'NOT_FOUND' })
   })
@@ -133,6 +156,9 @@ beforeEach(() => {
   api.acks = []
   api.syncCalls = 0
   api.failAck = false
+  api.activeCalls = 0
+  api.claims = []
+  api.denyClaim = new Set<string>()
 })
 
 describe('session-start hook e2e', () => {
@@ -312,5 +338,51 @@ describe('stop hook e2e', () => {
     const { stdout } = await child
     expect(stdout).toBe('')
     expect(api.syncCalls).toBe(0)
+  })
+})
+
+describe('coexistence with the always-on daemon', () => {
+  it('marks the session active and claims what it surfaces', async () => {
+    api.queue = [makeRow(1), makeRow(2), makeRow(3)]
+    const { stdout } = await runHook('stop', 'claude-code', { session_id: 'coex' })
+    // Announced itself so the daemon yields.
+    expect(api.activeCalls).toBeGreaterThanOrEqual(1)
+    // Claimed each surfaced message so the daemon stands down for them.
+    expect(api.claims).toEqual(expect.arrayContaining(['msg_1', 'msg_2', 'msg_3']))
+    // A pickup was emitted (multi-message pickups summarize by count) and the
+    // ack cursor reaches the newest — all three were surfaced then committed.
+    const context = JSON.parse(stdout).reason as string
+    expect(context).toMatch(/3 AgentChat/)
+    expect(api.acks).toEqual([`del_${String(3).padStart(32, '0')}`])
+  })
+
+  it('does NOT surface a message the daemon already owns (claim lost)', async () => {
+    api.queue = [makeRow(1), makeRow(2), makeRow(3)]
+    api.denyClaim = new Set(['msg_2']) // daemon owns msg_2
+    const { stdout } = await runHook('stop', 'claude-code', { session_id: 'coex2' })
+    const context = JSON.parse(stdout).reason as string
+    // Only the contiguous prefix before the daemon-owned row is surfaced.
+    expect(context).toContain('"ping 1"')
+    expect(context).not.toContain('"ping 2"')
+    expect(context).not.toContain('"ping 3"')
+    // Ack cursor stops before the daemon-owned message — msg_2/msg_3 stay queued
+    // (the daemon acks msg_2 when done; msg_3 re-surfaces next turn).
+    expect(api.acks).toEqual([`del_${String(1).padStart(32, '0')}`])
+    expect(api.queue).toHaveLength(2)
+  })
+
+  it('announces the session active even when the inbox is empty', async () => {
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 'coex3' })
+    expect(stdout).toBe('') // nothing to surface
+    expect(api.activeCalls).toBeGreaterThanOrEqual(1) // but still announced
+  })
+
+  it('degrades to today’s behavior when the daemon owns the OLDEST message', async () => {
+    api.queue = [makeRow(1), makeRow(2)]
+    api.denyClaim = new Set(['msg_1']) // daemon owns the oldest → prefix is empty
+    const { stdout } = await runHook('stop', 'claude-code', { session_id: 'coex4' })
+    expect(stdout).toBe('') // nothing surfaced this turn
+    expect(api.acks).toHaveLength(0) // nothing acked — both stay queued
+    expect(api.queue).toHaveLength(2)
   })
 })

@@ -11,7 +11,15 @@ import {
   shouldOfferRegistration,
   recordRegistrationOffer,
 } from '../lib/state.js'
-import { syncPeek, syncAck, lastDeliveryId, type WireConfig } from '../lib/wire.js'
+import {
+  syncPeek,
+  syncAck,
+  lastDeliveryId,
+  markSessionActive,
+  claimReply,
+  type WireConfig,
+  type SyncRow,
+} from '../lib/wire.js'
 import { getMeLite } from '../lib/wire.js'
 import {
   formatSessionStart,
@@ -73,6 +81,33 @@ function ackableRows<T extends { delivery_id: string | null }>(rows: T[]): T[] {
   return usable
 }
 
+/**
+ * Coexistence with the always-on daemon: claim the sole right to reply to each
+ * row before surfacing it, so the daemon stands down for what this session
+ * takes. Returns the CONTIGUOUS oldest-first prefix this session won — stopping
+ * at the first row the daemon already owns keeps the ack cursor (which commits
+ * everything at-or-before it) from acking a message the daemon is mid-turn on.
+ * Claims run in parallel; each is fail-open (a coord outage yields the row to
+ * this session, i.e. today's behavior). Rows past a daemon-owned one stay
+ * queued and re-surface next turn — duplicate beats loss, per invariant 3.
+ */
+async function claimContiguousPrefix(
+  cfg: WireConfig,
+  rows: SyncRow[],
+  holder: string,
+): Promise<SyncRow[]> {
+  const won = await Promise.all(rows.map((r) => claimReply(cfg, r.id, holder)))
+  const prefix: SyncRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    if (!won[i]) break // daemon owns this one — stop so the ack cursor stays clean
+    prefix.push(rows[i] as SyncRow)
+  }
+  if (prefix.length < rows.length) {
+    log.info(`coexistence: daemon owns ${rows.length - prefix.length} row(s); surfacing ${prefix.length}`)
+  }
+  return prefix
+}
+
 export async function runSessionStartHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
@@ -106,7 +141,14 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
     }
 
     const cfg: WireConfig = { apiKey: identity.apiKey, apiBase: identity.apiBase }
-    const rows = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }))
+    // Announce this session so the always-on daemon (if the user runs one)
+    // yields incoming messages to it. Fail-open: a no-op without /v1/reply.
+    await markSessionActive(cfg)
+
+    const peeked = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }))
+    if (peeked.length === 0) return
+    // Claim what we surface so the daemon stands down for exactly these rows.
+    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`)
     if (rows.length === 0) return
 
     const handle = await resolveHandle(cfg, identity.handle)
@@ -164,14 +206,22 @@ export async function runStopHook(platform: Platform): Promise<void> {
     if (identity === null) return
 
     const sessionKey = `${platform}:${input.sessionId}`
+    const cfg: WireConfig = { apiKey: identity.apiKey, apiBase: identity.apiBase }
+    // Keep announcing this session so the daemon keeps yielding — even when
+    // we're capped this sitting: a capped session still OWNS its inbox, and
+    // the daemon taking over would defeat the continuation loop-guard.
+    await markSessionActive(cfg)
+
     const cap = maxContinuations()
     if (getContinuations(sessionKey) >= cap) {
       log.info(`stop hook: continuation cap (${cap}) reached for ${sessionKey}; leaving inbox queued`)
       return
     }
 
-    const cfg: WireConfig = { apiKey: identity.apiKey, apiBase: identity.apiBase }
-    const rows = ackableRows(await syncPeek(cfg, { limit: STOP_PEEK_LIMIT }))
+    const peeked = ackableRows(await syncPeek(cfg, { limit: STOP_PEEK_LIMIT }))
+    if (peeked.length === 0) return
+    // Claim what we surface so the daemon stands down for exactly these rows.
+    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`)
     if (rows.length === 0) return
 
     recordContinuation(sessionKey)

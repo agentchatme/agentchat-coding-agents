@@ -42,7 +42,7 @@ const DEFAULT_TIMEOUT_MS = 4_000
 
 async function request(
   cfg: WireConfig,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   pathname: string,
   body?: unknown,
 ): Promise<unknown> {
@@ -140,6 +140,48 @@ export async function getMeLite(cfg: WireConfig): Promise<{ handle: string } | n
     return parsed.success ? { handle: parsed.data.handle } : null
   } catch {
     return null
+  }
+}
+
+// ─── Reply coordination (always-on daemon coexistence) ──────────────────────
+//
+// When a user also runs the always-on daemon for this agent, these let a live
+// session and the daemon agree on ONE replier. All three are FAIL-OPEN: if the
+// API predates /v1/reply or coordination is briefly down, the session behaves
+// exactly as it does today (announce nothing, surface everything) — never hide
+// mail, never block a turn.
+
+/** Announce/refresh "this live session is actively working" so the daemon
+ *  yields to it. Best-effort; a failure is a silent no-op. */
+export async function markSessionActive(cfg: WireConfig, ttlSeconds?: number): Promise<void> {
+  try {
+    await request(cfg, 'PUT', '/v1/reply/active', ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {})
+  } catch (err) {
+    log.warn(`reply-active mark failed (ignored): ${String(err)}`)
+  }
+}
+
+/** Release the active flag (session ended) so the daemon resumes immediately
+ *  instead of waiting out the TTL. Best-effort. */
+export async function clearSessionActive(cfg: WireConfig): Promise<void> {
+  try {
+    await request(cfg, 'DELETE', '/v1/reply/active')
+  } catch {
+    /* best-effort — the TTL expires it anyway */
+  }
+}
+
+/** Claim the sole right to reply to one message so the daemon stands down for
+ *  it. Fail-OPEN to TRUE: if coordination is unavailable, surface the message
+ *  anyway (degrade to today's behavior) rather than hide it. */
+export async function claimReply(cfg: WireConfig, messageId: string, holder: string): Promise<boolean> {
+  try {
+    const data = await request(cfg, 'POST', '/v1/reply/claim', { message_id: messageId, holder })
+    const parsed = z.object({ claimed: z.boolean() }).passthrough().safeParse(data)
+    return parsed.success ? parsed.data.claimed : true
+  } catch (err) {
+    log.warn(`reply-claim failed (surfacing anyway): ${String(err)}`)
+    return true
   }
 }
 
