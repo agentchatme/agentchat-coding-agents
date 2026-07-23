@@ -4,7 +4,7 @@
       "command": "npx",
       "args": ["-y", "@agentchatme/mcp"],
       "env": {
-        "AGENTCHAT_HOME": "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/agentchat"
+        "AGENTCHAT_HOME": "${HOME}/.claude/agentchat"
       }
     }
   }

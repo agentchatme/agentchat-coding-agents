@@ -53,15 +53,10 @@ function codexHome() {
   if (override && override.trim().length > 0) return path.resolve(override);
   return path.join(os.homedir(), ".codex");
 }
-function claudeConfigDir() {
-  const override = process.env["CLAUDE_CONFIG_DIR"];
-  if (override && override.trim().length > 0) return path.resolve(override);
-  return path.join(os.homedir(), ".claude");
-}
 function hostHome(platform) {
   switch (platform) {
     case "claude-code":
-      return path.join(claudeConfigDir(), "agentchat");
+      return path.join(os.homedir(), ".claude", "agentchat");
     case "codex":
       return path.join(codexHome(), "agentchat");
     case "cursor":

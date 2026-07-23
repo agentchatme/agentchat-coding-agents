@@ -6,20 +6,23 @@ import { binaryOnPath, detectPlatforms, runInstall } from '../src/commands/insta
 
 let home: string
 let fakeBinDir: string
+let savedHome: string | undefined
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-install-'))
   fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-bin-'))
   process.env['AGENTCHAT_HOME'] = home // keep resolveIdentity off the real machine
   process.env['CODEX_HOME'] = path.join(home, '.codex') // codex host home off the real ~/.codex
-  process.env['CLAUDE_CONFIG_DIR'] = path.join(home, '.claude') // claude host home off the real ~/.claude
+  savedHome = process.env['HOME']
+  process.env['HOME'] = home // claude host home (os.homedir) off the real ~/.claude
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
 afterEach(() => {
   delete process.env['AGENTCHAT_HOME']
   delete process.env['CODEX_HOME']
-  delete process.env['CLAUDE_CONFIG_DIR']
+  if (savedHome === undefined) delete process.env['HOME']
+  else process.env['HOME'] = savedHome
   vi.restoreAllMocks()
   fs.rmSync(home, { recursive: true, force: true })
   fs.rmSync(fakeBinDir, { recursive: true, force: true })

@@ -32,18 +32,21 @@ export function codexHome(): string {
   return path.join(os.homedir(), '.codex')
 }
 
-export function claudeConfigDir(): string {
-  const override = process.env['CLAUDE_CONFIG_DIR']
-  if (override && override.trim().length > 0) return path.resolve(override)
-  return path.join(os.homedir(), '.claude')
-}
-
 /** The identity home scoped to a specific host. Each host's MCP server and
- *  hooks resolve their credential here, so each host = its own agent. */
+ *  hooks resolve their credential here, so each host = its own agent.
+ *
+ *  Claude Code uses `~/.claude/agentchat` (via os.homedir, NOT
+ *  CLAUDE_CONFIG_DIR): the committed plugin `.mcp.json` sets the MCP
+ *  server's home to `${HOME}/.claude/agentchat` and Claude Code does NOT
+ *  substitute an unset CLAUDE_CONFIG_DIR — verified empirically 2026-07-23
+ *  (`${CLAUDE_CONFIG_DIR}` stayed literal; the nested `${VAR:-default}`
+ *  form mangled the path). Both sides must resolve the same folder, so we
+ *  pin to ~/.claude, matching the CLAUDE.md anchor location. Tests isolate
+ *  via HOME (os.homedir honors it on POSIX). */
 export function hostHome(platform: Platform): string {
   switch (platform) {
     case 'claude-code':
-      return path.join(claudeConfigDir(), 'agentchat')
+      return path.join(os.homedir(), '.claude', 'agentchat')
     case 'codex':
       return path.join(codexHome(), 'agentchat')
     case 'cursor':
