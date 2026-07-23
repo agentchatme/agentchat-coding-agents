@@ -4466,6 +4466,23 @@ async function getMeLite(cfg) {
     return null;
   }
 }
+async function markSessionActive(cfg, ttlSeconds) {
+  try {
+    await request(cfg, "PUT", "/v1/reply/active", ttlSeconds !== void 0 ? { ttl_seconds: ttlSeconds } : {});
+  } catch (err) {
+    log.warn(`reply-active mark failed (ignored): ${String(err)}`);
+  }
+}
+async function claimReply(cfg, messageId, holder) {
+  try {
+    const data = await request(cfg, "POST", "/v1/reply/claim", { message_id: messageId, holder });
+    const parsed = external_exports.object({ claimed: external_exports.boolean() }).passthrough().safeParse(data);
+    return parsed.success ? parsed.data.claimed : true;
+  } catch (err) {
+    log.warn(`reply-claim failed (surfacing anyway): ${String(err)}`);
+    return true;
+  }
+}
 function lastDeliveryId(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
     const id = rows[i]?.delivery_id;
@@ -4582,6 +4599,18 @@ function ackableRows(rows) {
   }
   return usable;
 }
+async function claimContiguousPrefix(cfg, rows, holder) {
+  const won = await Promise.all(rows.map((r) => claimReply(cfg, r.id, holder)));
+  const prefix = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!won[i]) break;
+    prefix.push(rows[i]);
+  }
+  if (prefix.length < rows.length) {
+    log.info(`coexistence: daemon owns ${rows.length - prefix.length} row(s); surfacing ${prefix.length}`);
+  }
+  return prefix;
+}
 async function runSessionStartHook(platform) {
   try {
     if (hooksDisabled()) return;
@@ -4598,7 +4627,10 @@ async function runSessionStartHook(platform) {
       return;
     }
     const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
-    const rows = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }));
+    await markSessionActive(cfg);
+    const peeked = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }));
+    if (peeked.length === 0) return;
+    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`);
     if (rows.length === 0) return;
     const handle = await resolveHandle(cfg, identity.handle);
     const context = formatSessionStart(handle, rows);
@@ -4640,13 +4672,16 @@ async function runStopHook(platform) {
     const identity = resolveIdentity();
     if (identity === null) return;
     const sessionKey = `${platform}:${input.sessionId}`;
+    const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
+    await markSessionActive(cfg);
     const cap = maxContinuations();
     if (getContinuations(sessionKey) >= cap) {
       log.info(`stop hook: continuation cap (${cap}) reached for ${sessionKey}; leaving inbox queued`);
       return;
     }
-    const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
-    const rows = ackableRows(await syncPeek(cfg, { limit: STOP_PEEK_LIMIT }));
+    const peeked = ackableRows(await syncPeek(cfg, { limit: STOP_PEEK_LIMIT }));
+    if (peeked.length === 0) return;
+    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`);
     if (rows.length === 0) return;
     recordContinuation(sessionKey);
     const handle = await resolveHandle(cfg, identity.handle);
@@ -4670,7 +4705,7 @@ import * as fs5 from "fs";
 import * as path6 from "path";
 import * as readline from "readline/promises";
 
-// ../node_modules/.pnpm/agentchatme@1.0.2/node_modules/agentchatme/dist/index.js
+// ../node_modules/.pnpm/agentchatme@1.0.2_ws@8.21.1/node_modules/agentchatme/dist/index.js
 var ErrorCode = {
   AGENT_NOT_FOUND: "AGENT_NOT_FOUND",
   AGENT_SUSPENDED: "AGENT_SUSPENDED",
