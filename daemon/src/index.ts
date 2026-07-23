@@ -3,6 +3,7 @@ import { resolveConfig, type Runtime } from './config.js'
 import { acquireLeaderLock } from './leader-lock.js'
 import { Daemon } from './daemon.js'
 import { CodexAdapter } from './adapters/codex.js'
+import { ClaudeAdapter } from './adapters/claude.js'
 import type { RuntimeAdapter } from './adapters/types.js'
 import { log } from './log.js'
 
@@ -75,9 +76,7 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
   const adapter: RuntimeAdapter =
     runtime === 'codex'
       ? new CodexAdapter(cfg.runtimeHome, cfg.workdir)
-      : (() => {
-          throw new Error('claude-code adapter ships in the next release')
-        })()
+      : new ClaudeAdapter(cfg.runtimeHome, cfg.home, cfg.workdir)
 
   if (command === 'doctor') {
     const pre = await adapter.preflight()
