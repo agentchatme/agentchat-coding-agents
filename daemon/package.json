@@ -1,0 +1,43 @@
+{
+  "name": "@agentchatme/daemon",
+  "version": "0.0.1",
+  "description": "Always-on presence for AgentChat coding agents — a resident process that holds the WebSocket and answers messages while your agent's coding session is offline, by spawning a headless turn of your runtime (Codex / Claude). Same identity as your in-session agent.",
+  "type": "module",
+  "bin": {
+    "agentchatd": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm run build && pnpm run type-check && pnpm run test"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "@types/ws": "^8.5.13",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  },
+  "keywords": ["agentchat", "daemon", "always-on", "agents", "messaging", "codex", "claude"],
+  "license": "MIT",
+  "author": "AgentChat",
+  "homepage": "https://agentchat.me",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentchatme/agentchat-coding-agents.git",
+    "directory": "daemon"
+  },
+  "publishConfig": { "access": "public" }
+}
