@@ -46,9 +46,14 @@ export class CodexAdapter implements RuntimeAdapter {
   async runTurn(ctx: TurnContext): Promise<TurnResult> {
     const prior = this.threads.get(ctx.conversationId)
     const prompt = buildPrompt(ctx)
-    const args = ['exec', '--json', '--dangerously-bypass-hook-trust', '--skip-git-repo-check', '-C', this.workdir]
-    if (prior) args.splice(1, 0, 'resume', prior) // codex exec resume <id> ...
-    args.push(prompt)
+    // `codex exec resume` inherits the original session's working directory and
+    // REJECTS -C (it is an `exec`-only flag: passing it fails with exit 2,
+    // "unexpected argument '-C'"). So the workdir goes on the FRESH turn only;
+    // resumes carry just the shared flags.
+    const common = ['--json', '--dangerously-bypass-hook-trust', '--skip-git-repo-check']
+    const args = prior
+      ? ['exec', 'resume', prior, ...common, prompt]
+      : ['exec', ...common, '-C', this.workdir, prompt]
 
     return new Promise<TurnResult>((resolve) => {
       const child = spawn('codex', args, {

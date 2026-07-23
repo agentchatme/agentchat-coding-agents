@@ -1,21 +1,32 @@
+import * as os from 'node:os'
 import { log } from './log.js'
 import type { DaemonConfig } from './config.js'
 import { AgentWsClient } from './ws-client.js'
+import { ReplyCoord } from './coord.js'
 import { senderOf, type SyncRow } from './wire.js'
 import type { RuntimeAdapter } from './adapters/types.js'
 
 // ─── The core loop ──────────────────────────────────────────────────────────
 //
-// WS pushes message.new → dedup → (per-conversation serialized, globally
+// WS pushes message.new → dedup → coexistence check (yield to a live session,
+// then claim the sole right to reply) → (per-conversation serialized, globally
 // capped) run one runtime turn → ack on success. Not acking on failure means
 // the server re-drains the message on the next reconnect (at-least-once); a
 // per-message attempt cap drops poison after N tries so it can't loop forever.
 
 const MAX_CONCURRENT_TURNS = 3
 const MAX_ATTEMPTS = 3
+// When the agent's live coding session is actively working, wait this long
+// before claiming — a head start so the human-driven session (priority) can
+// grab the message first. Only applies while a session is active; the common
+// "no session, daemon only" path has zero added latency. Tunable for testing.
+const YIELD_MS = Number(process.env['AGENTCHATD_YIELD_MS'] ?? 10_000)
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 export class Daemon {
   private readonly ws: AgentWsClient
+  private readonly coord: ReplyCoord
   private readonly seen = new Map<string, number>() // message id → attempts
   private readonly convChains = new Map<string, Promise<void>>()
   private inFlight = 0
@@ -26,6 +37,15 @@ export class Daemon {
     private readonly cfg: DaemonConfig,
     private readonly adapter: RuntimeAdapter,
   ) {
+    // Stable holder token: the same across a restart on THIS host, so a
+    // restarted daemon re-claims its own in-flight messages instead of being
+    // locked out by its own prior claim. (Two daemons per agent on one host
+    // are already prevented by the leader lock.)
+    this.coord = new ReplyCoord({
+      apiKey: cfg.apiKey,
+      apiBase: cfg.apiBase,
+      holder: `daemon:${os.hostname()}`,
+    })
     this.ws = new AgentWsClient(cfg.wsUrl, cfg.apiKey)
     this.ws.on('inbound', (row: SyncRow) => this.onInbound(row))
     this.ws.on('terminal', (reason: string) => {
@@ -72,6 +92,23 @@ export class Daemon {
 
   private async handle(row: SyncRow): Promise<void> {
     if (this.stopping) return
+
+    // ── Coexistence: agree on exactly one replier ──
+    // If the agent's live coding session is actively working, yield briefly so
+    // its hook can claim + handle this first (the human-driven session has
+    // priority). Then claim the sole right to reply; whoever wins is it.
+    if (await this.coord.isSessionActive()) {
+      log.info(`msg ${row.id}: live session active — yielding for ${YIELD_MS}ms`)
+      await delay(YIELD_MS)
+      if (this.stopping) return
+    }
+    if (!(await this.coord.claim(row.id))) {
+      // A live session owns this one. Do NOT ack — leave it 'stored' so the
+      // session's sync-peek still sees it and marks it delivered on handling.
+      log.info(`msg ${row.id}: claimed by the live session — standing down`)
+      return
+    }
+
     await this.acquireSlot()
     try {
       const attempts = (this.seen.get(row.id) ?? 0) + 1
