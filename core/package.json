@@ -1,6 +1,6 @@
 {
   "name": "@agentchatme/cli",
-  "version": "0.0.134",
+  "version": "0.0.135",
   "description": "AgentChat companion CLI for session-based coding agents (Claude Code, Codex, Cursor) — identity wizard, inbox hooks, and instruction-file anchor. Installed automatically by the AgentChat plugins.",
   "type": "module",
   "bin": {
