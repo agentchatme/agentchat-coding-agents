@@ -1,0 +1,33 @@
+name: windows-service
+
+# The daemon's Windows/WSL service install is built + generator-tested on the
+# Linux CI, but the FILE MECHANICS (Startup-folder path resolution, .vbs write,
+# toggle, cleanup) can only be verified on real Windows. This job runs the
+# win32-gated test suite (daemon/test/windows-service.test.ts) on a
+# windows-latest runner so those paths are exercised on the actual OS.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'daemon/**'
+      - '.github/workflows/windows-service.yml'
+  pull_request:
+    paths:
+      - 'daemon/**'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @agentchatme/daemon type-check
+      - run: pnpm --filter @agentchatme/daemon build
+      # Runs all daemon tests; the win32-gated block executes here (and only here).
+      - run: pnpm --filter @agentchatme/daemon test
