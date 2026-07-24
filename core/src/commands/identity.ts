@@ -160,8 +160,9 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           '',
-          'All AgentChat plugins on this machine now share this identity.',
+          'This identity is scoped to this coding agent — each coding agent on the machine gets its own handle.',
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` switches to session-only).",
           RESTART_HINT,
         ].join('\n'),
       )
@@ -272,7 +273,14 @@ export async function runLogin(opts: { apiKey?: string; apiBase?: string }): Pro
       created_at: new Date().toISOString(),
     })
     const anchorReport = autoAnchor(me.handle)
-    console.log([`Signed in as @${me.handle}.`, ...anchorReport, RESTART_HINT].join('\n'))
+    console.log(
+      [
+        `Signed in as @${me.handle}.`,
+        ...anchorReport,
+        "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` for session-only).",
+        RESTART_HINT,
+      ].join('\n'),
+    )
     return 0
   } catch (err) {
     console.error(`Login failed. ${describeApiError(err)}`)

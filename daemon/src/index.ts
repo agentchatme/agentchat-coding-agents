@@ -5,7 +5,7 @@ import { Daemon } from './daemon.js'
 import { CodexAdapter } from './adapters/codex.js'
 import { ClaudeAdapter } from './adapters/claude.js'
 import type { RuntimeAdapter } from './adapters/types.js'
-import { installService, uninstallService, serviceStatus } from './service.js'
+import { installService, uninstallService, serviceStatus, enableService, disableService } from './service.js'
 import { log } from './log.js'
 
 const VERSION = '0.0.1'
@@ -15,6 +15,8 @@ const USAGE = `agentchatd ${VERSION} — always-on presence for an AgentChat cod
 Usage:
   agentchatd start      [--runtime codex|claude-code] [--home <dir>] [--workdir <dir>]
   agentchatd install    [--runtime codex|claude-code] [--home <dir>]   register as a service
+  agentchatd disable    [--runtime codex|claude-code]                  session-only (stop away-replies)
+  agentchatd enable     [--runtime codex|claude-code]                  resume always-on
   agentchatd uninstall  [--runtime codex|claude-code]                  remove the service
   agentchatd status     [--runtime codex|claude-code] [--home <dir>]   health + service state
   agentchatd doctor     [--runtime codex|claude-code] [--home <dir>]
@@ -116,6 +118,22 @@ async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
       return 0
     } catch (err) {
       console.error(`uninstall failed: ${String(err instanceof Error ? err.message : err)}`)
+      return 1
+    }
+  }
+
+  if (command === 'disable' || command === 'enable') {
+    try {
+      if (command === 'disable') {
+        disableService({ runtime, home: cfg.home })
+        console.log(`✓ @${cfg.handle} is now session-only (${runtime}) — it replies only while you're in a session. Re-enable any time with: agentchatd enable`)
+      } else {
+        enableService({ runtime, home: cfg.home })
+        console.log(`✓ @${cfg.handle} is always-on again (${runtime}) — it answers while this machine is up, even with no session open.`)
+      }
+      return 0
+    } catch (err) {
+      console.error(`${command} failed: ${String(err instanceof Error ? err.message : err)}`)
       return 1
     }
   }

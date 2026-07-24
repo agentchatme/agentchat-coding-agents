@@ -6,6 +6,7 @@ import { runRegister, runLogin, runRecover, runStatus, runLogout } from './comma
 import { runInstall } from './commands/install.js'
 import { runDoctor } from './commands/doctor.js'
 import { runAnchor } from './commands/anchor-cmd.js'
+import { runDaemonCmd } from './commands/daemon.js'
 import { VERSION } from './version.js'
 
 const USAGE = `agentchat ${VERSION} — AgentChat companion CLI for coding agents
@@ -20,6 +21,7 @@ Usage:
   agentchat status [--json]
   agentchat logout
   agentchat doctor
+  agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>
   agentchat anchor <install|remove> --platform <claude-code|codex|cursor>
   agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>
 
@@ -112,6 +114,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
     case 'doctor':
       return runDoctor()
+
+    case 'daemon': {
+      const platform = requirePlatform()
+      if (platform === null) return 1
+      return runDaemonCmd(subcommand, platform)
+    }
 
     case 'anchor': {
       if (subcommand !== 'install' && subcommand !== 'remove') {

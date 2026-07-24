@@ -582,8 +582,8 @@ function getErrorMap() {
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path9, errorMaps, issueData } = params;
-  const fullPath = [...path9, ...issueData.path || []];
+  const { data, path: path10, errorMaps, issueData } = params;
+  const fullPath = [...path10, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -699,11 +699,11 @@ var errorUtil;
 
 // ../node_modules/.pnpm/zod@3.25.76/node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path9, key) {
+  constructor(parent, value, path10, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path9;
+    this._path = path10;
     this._key = key;
   }
   get path() {
@@ -4566,8 +4566,9 @@ function formatRegistrationOffer(cliPath, platform) {
     "1. Ask for the email + desired handle (3\u201330 chars, lowercase letters/digits/hyphens, must start with a letter).",
     `2. Run: ${invoke} register${p} --email <email> --handle <handle>`,
     `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register${p} --code <code>`,
+    `4. Then turn on always-on so you stay reachable when they're away \u2014 run: ${invoke} daemon install${p}. It's on by default; tell them in one line they can say "go session-only" any time to switch it off (that runs ${invoke} daemon disable${p}).`,
     "",
-    "Do not push \u2014 one short offer is plenty. If declined, drop the topic for the rest of the session."
+    "Do not push the initial handle offer \u2014 one short offer is plenty. If declined, drop the topic for the rest of the session."
   ].join("\n");
 }
 
@@ -4965,8 +4966,8 @@ var HttpTransport = class {
     }
     this.fetchFn = f.bind(globalThis);
   }
-  async request(method, path9, opts = {}) {
-    const url = `${this.baseUrl}${path9}`;
+  async request(method, path10, opts = {}) {
+    const url = `${this.baseUrl}${path10}`;
     const policy = resolveRetryPolicy(opts.retry, this.retry);
     const canRetry = isRetryEligible(method, opts.idempotencyKey, opts.retry);
     const maxAttempts = canRetry ? policy.maxRetries + 1 : 1;
@@ -5285,31 +5286,31 @@ var AgentChatClient = class _AgentChatClient {
     this.onBacklogWarning = options.onBacklogWarning;
   }
   // ─── Internal request helpers ─────────────────────────────────────────────
-  async get(path9, opts) {
-    const res = await this.http.request("GET", path9, this.toRequestOpts(opts));
+  async get(path10, opts) {
+    const res = await this.http.request("GET", path10, this.toRequestOpts(opts));
     return res.data;
   }
-  async del(path9, opts) {
-    const res = await this.http.request("DELETE", path9, this.toRequestOpts(opts));
+  async del(path10, opts) {
+    const res = await this.http.request("DELETE", path10, this.toRequestOpts(opts));
     return res.data;
   }
-  async post(path9, body, opts) {
-    const res = await this.http.request("POST", path9, {
+  async post(path10, body, opts) {
+    const res = await this.http.request("POST", path10, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async patch(path9, body, opts) {
-    const res = await this.http.request("PATCH", path9, {
+  async patch(path10, body, opts) {
+    const res = await this.http.request("PATCH", path10, {
       ...this.toRequestOpts(opts),
       body
     });
     return res.data;
   }
-  async put(path9, body, opts) {
+  async put(path10, body, opts) {
     const headers = opts?.contentType ? { "Content-Type": opts.contentType } : void 0;
-    const res = await this.http.request("PUT", path9, {
+    const res = await this.http.request("PUT", path10, {
       ...this.toRequestOpts(opts),
       body,
       rawBody: opts?.rawBody,
@@ -6397,8 +6398,9 @@ async function runRegister(opts) {
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           "",
-          "All AgentChat plugins on this machine now share this identity.",
+          "This identity is scoped to this coding agent \u2014 each coding agent on the machine gets its own handle.",
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` switches to session-only).",
           RESTART_HINT
         ].join("\n")
       );
@@ -6500,7 +6502,14 @@ async function runLogin(opts) {
       created_at: (/* @__PURE__ */ new Date()).toISOString()
     });
     const anchorReport = autoAnchor(me.handle);
-    console.log([`Signed in as @${me.handle}.`, ...anchorReport, RESTART_HINT].join("\n"));
+    console.log(
+      [
+        `Signed in as @${me.handle}.`,
+        ...anchorReport,
+        "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` for session-only).",
+        RESTART_HINT
+      ].join("\n")
+    );
     return 0;
   } catch (err) {
     console.error(`Login failed. ${describeApiError(err)}`);
@@ -6990,6 +6999,93 @@ async function runAnchor(action, platform) {
   return 0;
 }
 
+// src/commands/daemon.ts
+import * as fs8 from "fs";
+import * as os4 from "os";
+import * as path9 from "path";
+import { spawnSync as spawnSync2 } from "child_process";
+var DAEMON_PKG = "@agentchatme/daemon";
+function runtimeDir() {
+  return path9.join(os4.homedir(), ".agentchat", "daemon-runtime");
+}
+function daemonEntry() {
+  return path9.join(runtimeDir(), "node_modules", "@agentchatme", "daemon", "dist", "index.js");
+}
+function ensureDaemon() {
+  if (fs8.existsSync(daemonEntry())) return { ok: true };
+  const dir = runtimeDir();
+  try {
+    fs8.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    return { ok: false, detail: `could not create ${dir}: ${String(err)}` };
+  }
+  const r = spawnSync2(
+    "npm",
+    ["install", DAEMON_PKG, "--prefix", dir, "--no-save", "--no-audit", "--no-fund"],
+    { encoding: "utf-8", timeout: 18e4 }
+  );
+  if (r.error || r.status !== 0) {
+    const why = (r.stderr || r.error && r.error.message || "unknown error").slice(0, 300);
+    return { ok: false, detail: `npm install ${DAEMON_PKG} failed: ${why}` };
+  }
+  return fs8.existsSync(daemonEntry()) ? { ok: true } : { ok: false, detail: "installed but entrypoint missing" };
+}
+function runDaemon(args) {
+  const r = spawnSync2(process.execPath, [daemonEntry(), ...args], { stdio: "inherit" });
+  return r.status ?? 1;
+}
+async function runDaemonCmd(sub, platform) {
+  if (platform === "cursor") {
+    console.error("The always-on daemon supports Claude Code and Codex (Cursor not yet).");
+    return 1;
+  }
+  const runtime = platform;
+  const bound = process.env["AGENTCHAT_HOME"]?.trim();
+  const home = bound && bound.length > 0 ? bound : hostHome(platform);
+  if (sub === "install") {
+    const creds = readCredentialsFileAt(home);
+    if (creds === null) {
+      console.error(
+        `No AgentChat identity for ${platform} yet. Register first, then run:
+  agentchat daemon install --platform ${platform}`
+      );
+      return 1;
+    }
+    const got = ensureDaemon();
+    if (!got.ok) {
+      console.error(`Couldn't set up always-on automatically: ${got.detail}`);
+      console.error(`Finish it by hand:
+  npm i -g ${DAEMON_PKG}
+  agentchatd install --runtime ${runtime}`);
+      return 1;
+    }
+    const code = runDaemon(["install", "--runtime", runtime, "--home", home]);
+    if (code === 0) {
+      console.log(
+        [
+          "",
+          `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
+          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
+        ].join("\n")
+      );
+    }
+    return code;
+  }
+  if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
+    if (!fs8.existsSync(daemonEntry())) {
+      if (sub === "status") {
+        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
+        return 0;
+      }
+      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
+      return sub === "disable" ? 0 : 1;
+    }
+    return runDaemon([sub, "--runtime", runtime, "--home", home]);
+  }
+  console.error("Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>");
+  return 1;
+}
+
 // src/index.ts
 var USAGE = `agentchat ${VERSION2} \u2014 AgentChat companion CLI for coding agents
 
@@ -7003,6 +7099,7 @@ Usage:
   agentchat status [--json]
   agentchat logout
   agentchat doctor
+  agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>
   agentchat anchor <install|remove> --platform <claude-code|codex|cursor>
   agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>
 
@@ -7078,6 +7175,11 @@ async function main(argv = process.argv.slice(2)) {
       return runLogout();
     case "doctor":
       return runDoctor();
+    case "daemon": {
+      const platform = requirePlatform();
+      if (platform === null) return 1;
+      return runDaemonCmd(subcommand, platform);
+    }
     case "anchor": {
       if (subcommand !== "install" && subcommand !== "remove") {
         console.error("Usage: agentchat anchor <install|remove> --platform <claude-code|codex|cursor>");

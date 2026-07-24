@@ -108,7 +108,8 @@ export function formatRegistrationOffer(cliPath?: string, platform?: string): st
     '1. Ask for the email + desired handle (3–30 chars, lowercase letters/digits/hyphens, must start with a letter).',
     `2. Run: ${invoke} register${p} --email <email> --handle <handle>`,
     `3. A 6-digit code lands in their email; ask for it, then run: ${invoke} register${p} --code <code>`,
+    `4. Then turn on always-on so you stay reachable when they're away — run: ${invoke} daemon install${p}. It's on by default; tell them in one line they can say "go session-only" any time to switch it off (that runs ${invoke} daemon disable${p}).`,
     '',
-    'Do not push — one short offer is plenty. If declined, drop the topic for the rest of the session.',
+    'Do not push the initial handle offer — one short offer is plenty. If declined, drop the topic for the rest of the session.',
   ].join('\n')
 }

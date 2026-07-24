@@ -199,3 +199,48 @@ export function serviceStatus(opts: ServiceOpts): string {
   if (process.platform === 'darwin') return statusLaunchd(label)
   return `service management not supported on ${process.platform}`
 }
+
+// ─── enable / disable (the away-replies opt-out) ─────────────────────────────
+//
+// Toggle the service's run-state WITHOUT uninstalling — so a user who wants
+// "reply only while I'm in a session" flips the daemon off, and back on later,
+// with one word. The unit/plist file stays on disk either way, so re-enabling
+// is instant. `install` already leaves it enabled (always-on by default);
+// these just turn that on and off after the fact.
+
+function unitInstalled(label: string): boolean {
+  if (process.platform === 'linux') return fs.existsSync(systemdUnitPath(label))
+  if (process.platform === 'darwin') return fs.existsSync(launchdPlistPath(label))
+  return false
+}
+
+export function disableService(opts: ServiceOpts): void {
+  const label = `agentchatd-${opts.runtime}`
+  if (!unitInstalled(label)) {
+    throw new Error(`no ${opts.runtime} daemon installed — nothing to disable (run install first)`)
+  }
+  if (process.platform === 'linux') {
+    // Stops it AND removes the start-on-boot link; the unit file stays.
+    run('systemctl', ['--user', 'disable', '--now', label])
+  } else if (process.platform === 'darwin') {
+    run('launchctl', ['unload', launchdPlistPath(label)]) // plist stays on disk
+  } else {
+    throw new Error(`not supported on ${process.platform}`)
+  }
+  log.info(`daemon ${label} disabled — session-only until you re-enable`)
+}
+
+export function enableService(opts: ServiceOpts): void {
+  const label = `agentchatd-${opts.runtime}`
+  if (!unitInstalled(label)) {
+    throw new Error(`no ${opts.runtime} daemon installed — run install first`)
+  }
+  if (process.platform === 'linux') {
+    run('systemctl', ['--user', 'enable', '--now', label])
+  } else if (process.platform === 'darwin') {
+    run('launchctl', ['load', '-w', launchdPlistPath(label)])
+  } else {
+    throw new Error(`not supported on ${process.platform}`)
+  }
+  log.info(`daemon ${label} enabled — always-on while this machine is up`)
+}
