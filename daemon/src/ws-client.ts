@@ -41,6 +41,13 @@ export class AgentWsClient extends EventEmitter {
     super()
   }
 
+  /** True only while the socket is live and ready. The heartbeat writer keys
+   *  off this, so a reconnecting/terminal daemon lets its heartbeat go stale
+   *  and the next session detects that always-on is actually down. */
+  get connected(): boolean {
+    return this.state === 'ready'
+  }
+
   start(): void {
     this.stopped = false
     this.open()

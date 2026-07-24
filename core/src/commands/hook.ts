@@ -25,7 +25,9 @@ import {
   formatSessionStart,
   formatStopPickup,
   formatRegistrationOffer,
+  formatAlwaysOnDown,
 } from '../lib/summary.js'
+import { alwaysOnHealth } from './daemon.js'
 import { sessionStartOutput, stopOutput, type Platform } from '../lib/dialect.js'
 
 // ─── Hook commands ──────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
   try {
     if (hooksDisabled()) return
     // Resolve THIS host's identity (Claude vs Codex are distinct agents).
-    bindHostHome(platform)
+    const home = bindHostHome(platform)
     const input = await readHookInput()
 
     // Compaction is NOT a new sitting: the hooks.json matcher already
@@ -145,14 +147,25 @@ export async function runSessionStartHook(platform: Platform): Promise<void> {
     // yields incoming messages to it. Fail-open: a no-op without /v1/reply.
     await markSessionActive(cfg)
 
+    // If the user set up always-on but its daemon isn't beating, surface that —
+    // independent of the inbox, since being silently unreachable is the point.
+    const h = alwaysOnHealth(home)
+    const alert = h.wanted && !h.healthy ? formatAlwaysOnDown(platform) : null
+
     const peeked = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }))
-    if (peeked.length === 0) return
     // Claim what we surface so the daemon stands down for exactly these rows.
-    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`)
-    if (rows.length === 0) return
+    const rows =
+      peeked.length > 0 ? await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`) : []
+
+    if (rows.length === 0) {
+      // Nothing to digest — but still warn if always-on is down.
+      if (alert !== null) printJson(sessionStartOutput(platform, alert))
+      return
+    }
 
     const handle = await resolveHandle(cfg, identity.handle)
-    const context = formatSessionStart(handle, rows)
+    const digest = formatSessionStart(handle, rows)
+    const context = alert !== null ? `${alert}\n\n${digest}` : digest
 
     // Record the cursor as pending — committed by the user-prompt hook
     // once a turn actually runs (invariant 3). Then inject.

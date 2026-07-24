@@ -1,4 +1,6 @@
 import * as os from 'node:os'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { log } from './log.js'
 import type { DaemonConfig } from './config.js'
 import { AgentWsClient } from './ws-client.js'
@@ -16,6 +18,13 @@ import type { RuntimeAdapter } from './adapters/types.js'
 
 const MAX_CONCURRENT_TURNS = 3
 const MAX_ATTEMPTS = 3
+// Liveness beacon: while connected, touch <home>/daemon.heartbeat every 30s.
+// A session-start hook reads its age — if always-on was set up but this file is
+// stale (or gone), the daemon is down and the next session says so. The name
+// must match the reader in the CLI (core: alwaysOnHealth). Refreshed ONLY while
+// the socket is 'ready', so a reconnecting/terminal daemon goes stale on cue.
+const HEARTBEAT_FILE = 'daemon.heartbeat'
+const HEARTBEAT_MS = 30_000
 // When the agent's live coding session is actively working, wait this long
 // before claiming — a head start so the human-driven session (priority) can
 // grab the message first. Only applies while a session is active; the common
@@ -32,10 +41,12 @@ export class Daemon {
   private inFlight = 0
   private readonly waiters: Array<() => void> = []
   private stopping = false
+  private heartbeatTimer: NodeJS.Timeout | null = null
 
   constructor(
     private readonly cfg: DaemonConfig,
     private readonly adapter: RuntimeAdapter,
+    ws?: AgentWsClient, // injectable for tests; defaults to a real socket
   ) {
     // Stable holder token: the same across a restart on THIS host, so a
     // restarted daemon re-claims its own in-flight messages instead of being
@@ -46,8 +57,11 @@ export class Daemon {
       apiBase: cfg.apiBase,
       holder: `daemon:${os.hostname()}`,
     })
-    this.ws = new AgentWsClient(cfg.wsUrl, cfg.apiKey)
+    this.ws = ws ?? new AgentWsClient(cfg.wsUrl, cfg.apiKey)
     this.ws.on('inbound', (row: SyncRow) => this.onInbound(row))
+    // Every fresh connection stamps the beacon immediately (don't wait up to 30s
+    // for the first interval tick to prove we're live).
+    this.ws.on('ready', () => this.writeHeartbeat())
     this.ws.on('terminal', (reason: string) => {
       log.error(`daemon terminal: ${reason}`)
       this.stop()
@@ -62,11 +76,28 @@ export class Daemon {
     }
     log.info(`agentchatd up as @${this.cfg.handle} via ${this.adapter.name}; holding the wire`)
     this.ws.start()
+    // Keep the beacon fresh while connected. unref so it never by itself keeps
+    // the process alive.
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws.connected) this.writeHeartbeat()
+    }, HEARTBEAT_MS)
+    this.heartbeatTimer.unref()
   }
 
   stop(): void {
     this.stopping = true
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     this.ws.stop()
+  }
+
+  /** Touch the liveness beacon. Best-effort — a heartbeat write must never take
+   *  the daemon down, so a failure (read-only home, races) is swallowed. */
+  private writeHeartbeat(): void {
+    try {
+      fs.writeFileSync(path.join(this.cfg.home, HEARTBEAT_FILE), String(Date.now()))
+    } catch {
+      /* non-fatal: the reader treats a missing/stale beacon as "down" anyway */
+    }
   }
 
   private onInbound(row: SyncRow): void {

@@ -25,6 +25,56 @@ function daemonEntry(): string {
   return path.join(runtimeDir(), 'node_modules', '@agentchatme', 'daemon', 'dist', 'index.js')
 }
 
+// ─── Always-on health, as the session-start hook sees it ─────────────────────
+//
+// Two per-home markers make "is always-on actually up?" answerable without
+// shelling out to systemctl/launchctl on every session start:
+//   • always-on.wanted  — written on install/enable, cleared on disable/uninstall.
+//     Encodes user INTENT, so we only ever nag someone who opted in.
+//   • daemon.heartbeat  — touched by the running daemon every 30s while connected
+//     (see the daemon package). Its age is the LIVENESS signal.
+// Wanted + fresh beacon = healthy. Wanted + stale/missing beacon = down.
+const ALWAYS_ON_WANTED = 'always-on.wanted'
+const HEARTBEAT_FILE = 'daemon.heartbeat' // must match daemon/src/daemon.ts
+// 3 min tolerates a brief reconnect (the daemon beats every 30s) without a false
+// "down" — but a genuinely dead daemon is well past it.
+const HEARTBEAT_STALE_MS = 3 * 60_000
+
+/** Record that the user wants always-on for this host. */
+export function markAlwaysOnWanted(home: string): void {
+  try {
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(path.join(home, ALWAYS_ON_WANTED), '')
+  } catch {
+    /* non-fatal: worst case the hook can't nag on a later failure */
+  }
+}
+
+/** Forget the intent (user chose session-only, or uninstalled). */
+export function clearAlwaysOnWanted(home: string): void {
+  try {
+    fs.rmSync(path.join(home, ALWAYS_ON_WANTED), { force: true })
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * The health the session-start hook acts on. `wanted:false` means the user never
+ * opted into always-on (or turned it off) → the hook stays silent. `wanted:true,
+ * healthy:false` means always-on was set up but the daemon isn't beating → the
+ * hook warns. Pure reads (two stats), no subprocess, never throws.
+ */
+export function alwaysOnHealth(home: string): { wanted: boolean; healthy: boolean } {
+  if (!fs.existsSync(path.join(home, ALWAYS_ON_WANTED))) return { wanted: false, healthy: true }
+  try {
+    const age = Date.now() - fs.statSync(path.join(home, HEARTBEAT_FILE)).mtimeMs
+    return { wanted: true, healthy: age <= HEARTBEAT_STALE_MS }
+  } catch {
+    return { wanted: true, healthy: false } // no beacon → never started, or long dead
+  }
+}
+
 /**
  * Fetch the daemon into a user-owned prefix. `--prefix <dir>` (not `-g`) can't
  * hit the EACCES that a global install does on system-owned node dirs, and it
@@ -80,6 +130,7 @@ export function tryInstallDaemon(
     const raw = (r.stderr || r.stdout || r.error?.message || '') as string
     return { ok: false, detail: raw.slice(0, 300).trim() || 'service install failed' }
   }
+  markAlwaysOnWanted(home) // opted in → the hook may warn if it later stops beating
   return { ok: true }
 }
 
@@ -111,6 +162,7 @@ export async function runDaemonCmd(sub: string | undefined, platform: Platform):
     }
     const code = runDaemon(['install', '--runtime', runtime, '--home', home])
     if (code === 0) {
+      markAlwaysOnWanted(home)
       console.log(
         [
           '',
@@ -128,10 +180,17 @@ export async function runDaemonCmd(sub: string | undefined, platform: Platform):
         console.log('Always-on: not installed (session-only). Turn it on with: agentchat daemon install')
         return 0
       }
+      if (sub === 'disable') clearAlwaysOnWanted(home) // already session-only → make intent match
       console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`)
       return sub === 'disable' ? 0 : 1 // already session-only → disable is a no-op success
     }
-    return runDaemon([sub, '--runtime', runtime, '--home', home])
+    const code = runDaemon([sub, '--runtime', runtime, '--home', home])
+    if (code === 0) {
+      // Keep intent in sync so the session-start hook nags only when it should.
+      if (sub === 'enable') markAlwaysOnWanted(home)
+      else if (sub === 'disable' || sub === 'uninstall') clearAlwaysOnWanted(home)
+    }
+    return code
   }
 
   console.error('Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>')

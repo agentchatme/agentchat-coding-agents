@@ -4554,6 +4554,9 @@ function formatStopPickup(handle, rows) {
     "Handle these per your AgentChat skill, then finish. Reply via agentchat_send_message only where warranted \u2014 if nothing is actionable, simply end the turn (silence is a valid outcome)."
   ].join("\n");
 }
+function formatAlwaysOnDown(platform) {
+  return `\u26A0 Always-on is down \u2014 while you are away I won\u2019t be able to answer messages (they queue for your next session, nothing is lost). Turn it back on: \`agentchat daemon install --platform ${platform}\``;
+}
 function formatRegistrationOffer(cliPath, platform) {
   const invoke = cliPath ? `node "${cliPath}"` : "agentchat";
   const p = platform ? ` --platform ${platform}` : "";
@@ -4577,6 +4580,140 @@ function formatRegistrationOffer(cliPath, platform) {
     "",
     "Do not push the offer \u2014 one short ask is plenty. If declined, drop the topic for the rest of the session."
   ].join("\n");
+}
+
+// src/commands/daemon.ts
+import * as fs3 from "fs";
+import * as os2 from "os";
+import * as path4 from "path";
+import { spawnSync } from "child_process";
+var DAEMON_PKG = "@agentchatme/daemon";
+function runtimeDir() {
+  return path4.join(os2.homedir(), ".agentchat", "daemon-runtime");
+}
+function daemonEntry() {
+  return path4.join(runtimeDir(), "node_modules", "@agentchatme", "daemon", "dist", "index.js");
+}
+var ALWAYS_ON_WANTED = "always-on.wanted";
+var HEARTBEAT_FILE = "daemon.heartbeat";
+var HEARTBEAT_STALE_MS = 3 * 6e4;
+function markAlwaysOnWanted(home) {
+  try {
+    fs3.mkdirSync(home, { recursive: true });
+    fs3.writeFileSync(path4.join(home, ALWAYS_ON_WANTED), "");
+  } catch {
+  }
+}
+function clearAlwaysOnWanted(home) {
+  try {
+    fs3.rmSync(path4.join(home, ALWAYS_ON_WANTED), { force: true });
+  } catch {
+  }
+}
+function alwaysOnHealth(home) {
+  if (!fs3.existsSync(path4.join(home, ALWAYS_ON_WANTED))) return { wanted: false, healthy: true };
+  try {
+    const age = Date.now() - fs3.statSync(path4.join(home, HEARTBEAT_FILE)).mtimeMs;
+    return { wanted: true, healthy: age <= HEARTBEAT_STALE_MS };
+  } catch {
+    return { wanted: true, healthy: false };
+  }
+}
+function ensureDaemon() {
+  if (fs3.existsSync(daemonEntry())) return { ok: true };
+  const dir = runtimeDir();
+  try {
+    fs3.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    return { ok: false, detail: `could not create ${dir}: ${String(err)}` };
+  }
+  const r = spawnSync(
+    "npm",
+    ["install", DAEMON_PKG, "--prefix", dir, "--no-save", "--no-audit", "--no-fund"],
+    { encoding: "utf-8", timeout: 18e4 }
+  );
+  if (r.error || r.status !== 0) {
+    const why = (r.stderr || r.error && r.error.message || "unknown error").slice(0, 300);
+    return { ok: false, detail: `npm install ${DAEMON_PKG} failed: ${why}` };
+  }
+  return fs3.existsSync(daemonEntry()) ? { ok: true } : { ok: false, detail: "installed but entrypoint missing" };
+}
+function runDaemon(args) {
+  const r = spawnSync(process.execPath, [daemonEntry(), ...args], { stdio: "inherit" });
+  return r.status ?? 1;
+}
+function tryInstallDaemon(platform, home) {
+  const got = ensureDaemon();
+  if (!got.ok) return { ok: false, detail: got.detail ?? "runtime fetch failed" };
+  const r = spawnSync(
+    process.execPath,
+    [daemonEntry(), "install", "--runtime", platform, "--home", home],
+    { encoding: "utf-8", timeout: 12e4 }
+  );
+  if (r.error || r.status !== 0) {
+    const raw = r.stderr || r.stdout || r.error?.message || "";
+    return { ok: false, detail: raw.slice(0, 300).trim() || "service install failed" };
+  }
+  markAlwaysOnWanted(home);
+  return { ok: true };
+}
+async function runDaemonCmd(sub, platform) {
+  if (platform === "cursor") {
+    console.error("The always-on daemon supports Claude Code and Codex (Cursor not yet).");
+    return 1;
+  }
+  const runtime = platform;
+  const bound = process.env["AGENTCHAT_HOME"]?.trim();
+  const home = bound && bound.length > 0 ? bound : hostHome(platform);
+  if (sub === "install") {
+    const creds = readCredentialsFileAt(home);
+    if (creds === null) {
+      console.error(
+        `No AgentChat identity for ${platform} yet. Register first, then run:
+  agentchat daemon install --platform ${platform}`
+      );
+      return 1;
+    }
+    const got = ensureDaemon();
+    if (!got.ok) {
+      console.error(`Couldn't set up always-on automatically: ${got.detail}`);
+      console.error(`Finish it by hand:
+  npm i -g ${DAEMON_PKG}
+  agentchatd install --runtime ${runtime}`);
+      return 1;
+    }
+    const code = runDaemon(["install", "--runtime", runtime, "--home", home]);
+    if (code === 0) {
+      markAlwaysOnWanted(home);
+      console.log(
+        [
+          "",
+          `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
+          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
+        ].join("\n")
+      );
+    }
+    return code;
+  }
+  if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
+    if (!fs3.existsSync(daemonEntry())) {
+      if (sub === "status") {
+        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
+        return 0;
+      }
+      if (sub === "disable") clearAlwaysOnWanted(home);
+      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
+      return sub === "disable" ? 0 : 1;
+    }
+    const code = runDaemon([sub, "--runtime", runtime, "--home", home]);
+    if (code === 0) {
+      if (sub === "enable") markAlwaysOnWanted(home);
+      else if (sub === "disable" || sub === "uninstall") clearAlwaysOnWanted(home);
+    }
+    return code;
+  }
+  console.error("Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>");
+  return 1;
 }
 
 // src/commands/hook.ts
@@ -4622,7 +4759,7 @@ async function claimContiguousPrefix(cfg, rows, holder) {
 async function runSessionStartHook(platform) {
   try {
     if (hooksDisabled()) return;
-    bindHostHome(platform);
+    const home = bindHostHome(platform);
     const input = await readHookInput();
     if (input.source === "compact") return;
     resetSession(`${platform}:${input.sessionId}`);
@@ -4636,12 +4773,19 @@ async function runSessionStartHook(platform) {
     }
     const cfg = { apiKey: identity.apiKey, apiBase: identity.apiBase };
     await markSessionActive(cfg);
+    const h = alwaysOnHealth(home);
+    const alert = h.wanted && !h.healthy ? formatAlwaysOnDown(platform) : null;
     const peeked = ackableRows(await syncPeek(cfg, { limit: SESSION_START_PEEK_LIMIT }));
-    if (peeked.length === 0) return;
-    const rows = await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`);
-    if (rows.length === 0) return;
+    const rows = peeked.length > 0 ? await claimContiguousPrefix(cfg, peeked, `session:${input.sessionId}`) : [];
+    if (rows.length === 0) {
+      if (alert !== null) printJson(sessionStartOutput(platform, alert));
+      return;
+    }
     const handle = await resolveHandle(cfg, identity.handle);
-    const context = formatSessionStart(handle, rows);
+    const digest = formatSessionStart(handle, rows);
+    const context = alert !== null ? `${alert}
+
+${digest}` : digest;
     const cursor = lastDeliveryId(rows);
     if (cursor !== null) {
       setPendingAck(`${platform}:${input.sessionId}`, cursor);
@@ -5979,9 +6123,9 @@ var AgentChatClient = class _AgentChatClient {
 var MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024;
 
 // src/lib/anchor.ts
-import * as fs3 from "fs";
-import * as os2 from "os";
-import * as path4 from "path";
+import * as fs4 from "fs";
+import * as os3 from "os";
+import * as path5 from "path";
 var ANCHOR_START = "<!-- agentchat:start -->";
 var ANCHOR_END = "<!-- agentchat:end -->";
 var LEGACY_ANCHOR_START = "<!-- agentchat-skill:start -->";
@@ -5989,9 +6133,9 @@ var LEGACY_ANCHOR_END = "<!-- agentchat-skill:end -->";
 function anchorFilePath(platform) {
   switch (platform) {
     case "claude-code":
-      return path4.join(os2.homedir(), ".claude", "CLAUDE.md");
+      return path5.join(os3.homedir(), ".claude", "CLAUDE.md");
     case "codex":
-      return path4.join(codexHome(), "AGENTS.md");
+      return path5.join(codexHome(), "AGENTS.md");
     case "cursor":
       return null;
   }
@@ -6016,11 +6160,11 @@ function installAnchor(platform, handle) {
   if (filePath === null) return { platform, path: null, action: "unsupported" };
   const trimmedHandle = handle.trim();
   if (!trimmedHandle) throw new Error("installAnchor: handle is empty");
-  fs3.mkdirSync(path4.dirname(filePath), { recursive: true });
-  const existing = fs3.existsSync(filePath) ? fs3.readFileSync(filePath, "utf-8") : "";
+  fs4.mkdirSync(path5.dirname(filePath), { recursive: true });
+  const existing = fs4.existsSync(filePath) ? fs4.readFileSync(filePath, "utf-8") : "";
   const next = upsertAnchorBlock(existing, renderAnchorBlock(trimmedHandle));
-  fs3.writeFileSync(filePath, next, "utf-8");
-  const verify = fs3.readFileSync(filePath, "utf-8");
+  fs4.writeFileSync(filePath, next, "utf-8");
+  const verify = fs4.readFileSync(filePath, "utf-8");
   if (!verify.includes(`@${trimmedHandle}`)) {
     throw new Error(
       `installAnchor: handle @${trimmedHandle} did not land in ${filePath} \u2014 please remove the agentchat block manually and re-run.`
@@ -6031,17 +6175,17 @@ function installAnchor(platform, handle) {
 function removeAnchor(platform) {
   const filePath = anchorFilePath(platform);
   if (filePath === null) return { platform, path: null, action: "unsupported" };
-  if (!fs3.existsSync(filePath)) return { platform, path: filePath, action: "noop" };
-  const existing = fs3.readFileSync(filePath, "utf-8");
+  if (!fs4.existsSync(filePath)) return { platform, path: filePath, action: "noop" };
+  const existing = fs4.readFileSync(filePath, "utf-8");
   const next = stripAnchorBlock(existing);
   if (next === existing) return { platform, path: filePath, action: "noop" };
-  fs3.writeFileSync(filePath, next, "utf-8");
+  fs4.writeFileSync(filePath, next, "utf-8");
   return { platform, path: filePath, action: "removed" };
 }
 function hasAnchor(platform) {
   const filePath = anchorFilePath(platform);
-  if (filePath === null || !fs3.existsSync(filePath)) return false;
-  const content = fs3.readFileSync(filePath, "utf-8");
+  if (filePath === null || !fs4.existsSync(filePath)) return false;
+  const content = fs4.readFileSync(filePath, "utf-8");
   return findBlock(content, ANCHOR_START, ANCHOR_END) !== null;
 }
 function lineAnchoredIndex(text, marker, fromIndex = 0) {
@@ -6090,22 +6234,22 @@ function stripAllBlocks(existing, start, end) {
 }
 
 // src/lib/codex-config.ts
-import * as fs4 from "fs";
-import * as path5 from "path";
+import * as fs5 from "fs";
+import * as path6 from "path";
 var TOML_START = "# agentchat:start";
 var TOML_END = "# agentchat:end";
-var BUNDLE_REL = path5.join("bin", "agentchat.mjs");
+var BUNDLE_REL = path6.join("bin", "agentchat.mjs");
 function codexConfigPath() {
-  return path5.join(codexHome(), "config.toml");
+  return path6.join(codexHome(), "config.toml");
 }
 function codexHooksPath() {
-  return path5.join(codexHome(), "hooks.json");
+  return path6.join(codexHome(), "hooks.json");
 }
 function codexIdentityHome() {
   return hostHome("codex");
 }
 function stableBundlePath() {
-  return path5.join(codexIdentityHome(), BUNDLE_REL);
+  return path6.join(codexIdentityHome(), BUNDLE_REL);
 }
 function renderCodexAgents(handle) {
   return [
@@ -6219,17 +6363,17 @@ function unmergeHooks(existing) {
 }
 function copyBundle(bundleSrc) {
   const dest = stableBundlePath();
-  fs4.mkdirSync(path5.dirname(dest), { recursive: true });
-  const srcResolved = path5.resolve(bundleSrc);
-  if (srcResolved !== path5.resolve(dest)) {
-    fs4.copyFileSync(srcResolved, dest);
+  fs5.mkdirSync(path6.dirname(dest), { recursive: true });
+  const srcResolved = path6.resolve(bundleSrc);
+  if (srcResolved !== path6.resolve(dest)) {
+    fs5.copyFileSync(srcResolved, dest);
   }
   return dest;
 }
 function installCodex(bundleSrc, handle) {
   const actions = [];
   const warnings = [];
-  fs4.mkdirSync(codexHome(), { recursive: true });
+  fs5.mkdirSync(codexHome(), { recursive: true });
   let bundle;
   try {
     bundle = copyBundle(bundleSrc);
@@ -6241,36 +6385,36 @@ function installCodex(bundleSrc, handle) {
     );
   }
   const cfgPath = codexConfigPath();
-  const existingCfg = fs4.existsSync(cfgPath) ? fs4.readFileSync(cfgPath, "utf-8") : "";
+  const existingCfg = fs5.existsSync(cfgPath) ? fs5.readFileSync(cfgPath, "utf-8") : "";
   if (hasUnfencedAgentchatServer(existingCfg)) {
     warnings.push(
       `${cfgPath} already defines [mcp_servers.agentchat] outside our block \u2014 left it untouched; remove it and re-run if it isn't ours`
     );
   } else {
-    fs4.writeFileSync(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()), "utf-8");
+    fs5.writeFileSync(cfgPath, upsertTomlBlock(existingCfg, mcpBlock()), "utf-8");
     actions.push(`config.toml \u2190 [mcp_servers.agentchat]`);
   }
   const hooksPath = codexHooksPath();
   let existingHooks = null;
-  if (fs4.existsSync(hooksPath)) {
+  if (fs5.existsSync(hooksPath)) {
     try {
-      existingHooks = JSON.parse(fs4.readFileSync(hooksPath, "utf-8"));
+      existingHooks = JSON.parse(fs5.readFileSync(hooksPath, "utf-8"));
     } catch {
       warnings.push(`${hooksPath} was not valid JSON \u2014 leaving it; wire hooks manually if needed`);
     }
   }
-  if (existingHooks !== null || !fs4.existsSync(hooksPath)) {
+  if (existingHooks !== null || !fs5.existsSync(hooksPath)) {
     const merged = mergeHooks(existingHooks, bundle);
-    fs4.writeFileSync(hooksPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
+    fs5.writeFileSync(hooksPath, JSON.stringify(merged, null, 2) + "\n", "utf-8");
     actions.push("hooks.json \u2190 SessionStart + Stop + UserPromptSubmit");
   }
   if (handle) {
     try {
-      const agentsPath = path5.join(codexHome(), "AGENTS.md");
-      const existing = fs4.existsSync(agentsPath) ? fs4.readFileSync(agentsPath, "utf-8") : "";
+      const agentsPath = path6.join(codexHome(), "AGENTS.md");
+      const existing = fs5.existsSync(agentsPath) ? fs5.readFileSync(agentsPath, "utf-8") : "";
       const next = upsertAnchorBlock(existing, renderCodexAgents(handle));
-      fs4.writeFileSync(agentsPath, next, "utf-8");
-      if (!fs4.readFileSync(agentsPath, "utf-8").includes(`@${handle}`)) {
+      fs5.writeFileSync(agentsPath, next, "utf-8");
+      if (!fs5.readFileSync(agentsPath, "utf-8").includes(`@${handle}`)) {
         throw new Error("handle did not land in AGENTS.md");
       }
       actions.push(`AGENTS.md \u2190 identity + etiquette (@${handle})`);
@@ -6286,17 +6430,17 @@ function installCodex(bundleSrc, handle) {
 function removeCodex() {
   const removed = [];
   const cfgPath = codexConfigPath();
-  if (fs4.existsSync(cfgPath)) {
-    const stripped = stripTomlBlock(fs4.readFileSync(cfgPath, "utf-8"));
-    fs4.writeFileSync(cfgPath, stripped, "utf-8");
+  if (fs5.existsSync(cfgPath)) {
+    const stripped = stripTomlBlock(fs5.readFileSync(cfgPath, "utf-8"));
+    fs5.writeFileSync(cfgPath, stripped, "utf-8");
     removed.push("config.toml [mcp_servers.agentchat]");
   }
   const hooksPath = codexHooksPath();
-  if (fs4.existsSync(hooksPath)) {
+  if (fs5.existsSync(hooksPath)) {
     try {
-      const next = unmergeHooks(JSON.parse(fs4.readFileSync(hooksPath, "utf-8")));
-      if (next === null) fs4.unlinkSync(hooksPath);
-      else fs4.writeFileSync(hooksPath, JSON.stringify(next, null, 2) + "\n", "utf-8");
+      const next = unmergeHooks(JSON.parse(fs5.readFileSync(hooksPath, "utf-8")));
+      if (next === null) fs5.unlinkSync(hooksPath);
+      else fs5.writeFileSync(hooksPath, JSON.stringify(next, null, 2) + "\n", "utf-8");
       removed.push("hooks.json entries");
     } catch {
     }
@@ -6304,107 +6448,6 @@ function removeCodex() {
   const anchor = removeAnchor("codex");
   if (anchor.action === "removed") removed.push("AGENTS.md anchor");
   return removed;
-}
-
-// src/commands/daemon.ts
-import * as fs5 from "fs";
-import * as os3 from "os";
-import * as path6 from "path";
-import { spawnSync } from "child_process";
-var DAEMON_PKG = "@agentchatme/daemon";
-function runtimeDir() {
-  return path6.join(os3.homedir(), ".agentchat", "daemon-runtime");
-}
-function daemonEntry() {
-  return path6.join(runtimeDir(), "node_modules", "@agentchatme", "daemon", "dist", "index.js");
-}
-function ensureDaemon() {
-  if (fs5.existsSync(daemonEntry())) return { ok: true };
-  const dir = runtimeDir();
-  try {
-    fs5.mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    return { ok: false, detail: `could not create ${dir}: ${String(err)}` };
-  }
-  const r = spawnSync(
-    "npm",
-    ["install", DAEMON_PKG, "--prefix", dir, "--no-save", "--no-audit", "--no-fund"],
-    { encoding: "utf-8", timeout: 18e4 }
-  );
-  if (r.error || r.status !== 0) {
-    const why = (r.stderr || r.error && r.error.message || "unknown error").slice(0, 300);
-    return { ok: false, detail: `npm install ${DAEMON_PKG} failed: ${why}` };
-  }
-  return fs5.existsSync(daemonEntry()) ? { ok: true } : { ok: false, detail: "installed but entrypoint missing" };
-}
-function runDaemon(args) {
-  const r = spawnSync(process.execPath, [daemonEntry(), ...args], { stdio: "inherit" });
-  return r.status ?? 1;
-}
-function tryInstallDaemon(platform, home) {
-  const got = ensureDaemon();
-  if (!got.ok) return { ok: false, detail: got.detail ?? "runtime fetch failed" };
-  const r = spawnSync(
-    process.execPath,
-    [daemonEntry(), "install", "--runtime", platform, "--home", home],
-    { encoding: "utf-8", timeout: 12e4 }
-  );
-  if (r.error || r.status !== 0) {
-    const raw = r.stderr || r.stdout || r.error?.message || "";
-    return { ok: false, detail: raw.slice(0, 300).trim() || "service install failed" };
-  }
-  return { ok: true };
-}
-async function runDaemonCmd(sub, platform) {
-  if (platform === "cursor") {
-    console.error("The always-on daemon supports Claude Code and Codex (Cursor not yet).");
-    return 1;
-  }
-  const runtime = platform;
-  const bound = process.env["AGENTCHAT_HOME"]?.trim();
-  const home = bound && bound.length > 0 ? bound : hostHome(platform);
-  if (sub === "install") {
-    const creds = readCredentialsFileAt(home);
-    if (creds === null) {
-      console.error(
-        `No AgentChat identity for ${platform} yet. Register first, then run:
-  agentchat daemon install --platform ${platform}`
-      );
-      return 1;
-    }
-    const got = ensureDaemon();
-    if (!got.ok) {
-      console.error(`Couldn't set up always-on automatically: ${got.detail}`);
-      console.error(`Finish it by hand:
-  npm i -g ${DAEMON_PKG}
-  agentchatd install --runtime ${runtime}`);
-      return 1;
-    }
-    const code = runDaemon(["install", "--runtime", runtime, "--home", home]);
-    if (code === 0) {
-      console.log(
-        [
-          "",
-          `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
-          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
-        ].join("\n")
-      );
-    }
-    return code;
-  }
-  if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
-    if (!fs5.existsSync(daemonEntry())) {
-      if (sub === "status") {
-        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
-        return 0;
-      }
-      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
-      return sub === "disable" ? 0 : 1;
-    }
-    return runDaemon([sub, "--runtime", runtime, "--home", home]);
-  }
-  console.error("Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>");
-  return 1;
 }
 
 // src/commands/identity.ts

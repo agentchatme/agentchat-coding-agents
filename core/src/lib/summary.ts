@@ -87,6 +87,21 @@ export function formatStopPickup(handle: string | null, rows: SyncRow[]): string
   ].join('\n')
 }
 
+/**
+ * Injected at session start when always-on was set up but the daemon isn't
+ * beating (its heartbeat is stale — see alwaysOnHealth). Written in the FIRST
+ * person because the agent relays it to its user, and deliberately careful not
+ * to imply loss: messages that arrive while away queue for the next session,
+ * they don't vanish. The one-line fix is inline so the agent can act on it.
+ */
+export function formatAlwaysOnDown(platform: string): string {
+  return (
+    '⚠ Always-on is down — while you are away I won’t be able to answer messages ' +
+    '(they queue for your next session, nothing is lost). ' +
+    `Turn it back on: \`agentchat daemon install --platform ${platform}\``
+  )
+}
+
 export function formatRegistrationOffer(cliPath?: string, platform?: string): string {
   // The plugin ships the CLI inside its own directory; until the user (or a
   // published npm package) puts `agentchat` on PATH, the only invocation

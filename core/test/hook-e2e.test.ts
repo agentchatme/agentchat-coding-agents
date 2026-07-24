@@ -386,3 +386,44 @@ describe('coexistence with the always-on daemon', () => {
     expect(api.queue).toHaveLength(2)
   })
 })
+
+describe('session-start always-on health nudge', () => {
+  const wantAlwaysOn = (): void => fs.writeFileSync(path.join(home, 'always-on.wanted'), '')
+  const freshBeat = (): void =>
+    fs.writeFileSync(path.join(home, 'daemon.heartbeat'), String(Date.now()))
+
+  it('warns when always-on was set up but the daemon is not beating — even with an empty inbox', async () => {
+    api.queue = []
+    wantAlwaysOn() // opted in, but no heartbeat → down
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 'ao1' })
+    expect(stdout).not.toBe('')
+    const context = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(context).toContain('Always-on is down')
+    expect(context).toContain('agentchat daemon install')
+  })
+
+  it('stays silent when the daemon is beating and the inbox is empty', async () => {
+    api.queue = []
+    wantAlwaysOn()
+    freshBeat()
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 'ao2' })
+    expect(stdout).toBe('')
+  })
+
+  it('prepends the warning above the unread digest when both apply', async () => {
+    api.queue = [makeRow(1)]
+    wantAlwaysOn() // down
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 'ao3' })
+    const context = JSON.parse(stdout).hookSpecificOutput.additionalContext as string
+    expect(context).toContain('Always-on is down')
+    expect(context).toContain('1 unread message')
+    expect(context.indexOf('Always-on is down')).toBeLessThan(context.indexOf('unread message'))
+  })
+
+  it('never nags a session-only user (no intent marker), even with no heartbeat', async () => {
+    api.queue = []
+    // no wantAlwaysOn() → the user never opted into always-on
+    const { stdout } = await runHook('session-start', 'claude-code', { session_id: 'ao4' })
+    expect(stdout).toBe('')
+  })
+})
