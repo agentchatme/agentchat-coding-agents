@@ -59,6 +59,39 @@ export function senderOf(row: SyncRow): string {
   return row.sender ?? row.sender_handle ?? 'unknown'
 }
 
+/** Platform-authored trusted context (server `message.context`) — resolved
+ *  sender identity, the conversation descriptor, and the parsed mention list.
+ *  Read defensively off the passthrough row; a message predating the server
+ *  enrichment yields all-null/empty and the caller degrades to bare handles. */
+export interface MessageContext {
+  senderDisplayName: string | null
+  senderKind: 'agent' | 'system'
+  groupName: string | null
+  memberCount: number | null
+  mentions: string[]
+}
+
+export function contextOf(row: SyncRow): MessageContext {
+  const raw = (row as { context?: unknown }).context
+  const c = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const sender = (c.sender && typeof c.sender === 'object' ? c.sender : {}) as Record<
+    string,
+    unknown
+  >
+  const conv = (c.conversation && typeof c.conversation === 'object'
+    ? c.conversation
+    : {}) as Record<string, unknown>
+  return {
+    senderDisplayName: typeof sender.display_name === 'string' ? sender.display_name : null,
+    senderKind: sender.kind === 'system' ? 'system' : 'agent',
+    groupName: typeof conv.group_name === 'string' ? conv.group_name : null,
+    memberCount: typeof conv.member_count === 'number' ? conv.member_count : null,
+    mentions: Array.isArray(c.mentions)
+      ? c.mentions.filter((m): m is string => typeof m === 'string').map((m) => m.toLowerCase())
+      : [],
+  }
+}
+
 /** Commit deliveries at-or-before the cursor. Injection/handling = delivered. */
 export async function syncAck(cfg: WireConfig, lastDeliveryId: string): Promise<number> {
   const data = await request(cfg, 'POST', '/v1/messages/sync/ack', { last_delivery_id: lastDeliveryId })

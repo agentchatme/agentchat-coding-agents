@@ -3,7 +3,7 @@ import { log } from './log.js'
 import type { DaemonConfig } from './config.js'
 import { AgentWsClient } from './ws-client.js'
 import { ReplyCoord } from './coord.js'
-import { senderOf, type SyncRow } from './wire.js'
+import { contextOf, senderOf, type SyncRow } from './wire.js'
 import type { RuntimeAdapter } from './adapters/types.js'
 
 // ─── The core loop ──────────────────────────────────────────────────────────
@@ -115,10 +115,17 @@ export class Daemon {
       this.seen.set(row.id, attempts)
       log.info(`turn for msg ${row.id} from @${senderOf(row)} (attempt ${attempts})`)
 
+      const ctx = contextOf(row)
       const result = await this.adapter.runTurn({
         conversationId: row.conversation_id,
         sender: senderOf(row),
         text: typeof row.content?.['text'] === 'string' ? (row.content['text'] as string) : '',
+        createdAt: typeof row.created_at === 'string' ? row.created_at : undefined,
+        type: typeof row.type === 'string' ? row.type : undefined,
+        senderDisplayName: ctx.senderDisplayName,
+        senderKind: ctx.senderKind,
+        groupName: ctx.groupName,
+        mentioned: ctx.mentions.includes(this.cfg.handle.toLowerCase()),
       })
 
       if (result.ok) {

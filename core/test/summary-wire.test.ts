@@ -56,6 +56,14 @@ describe('digestConversations', () => {
     const [d] = digestConversations([row({ id: '1', type: 'attachment', content: {} })])
     expect(d!.latestSnippet).toBe('[attachment]')
   })
+
+  it('carries the newest created_at as latestCreatedAt (for the recency cue)', () => {
+    const [d] = digestConversations([
+      row({ id: '1', created_at: '2026-07-08T00:00:00Z' }),
+      row({ id: '2', created_at: '2026-07-08T01:00:00Z', content: { text: 'newest' } }),
+    ])
+    expect(d!.latestCreatedAt).toBe('2026-07-08T01:00:00Z')
+  })
 })
 
 describe('formatters', () => {
@@ -75,6 +83,30 @@ describe('formatters', () => {
     const text = formatStopPickup('demo-agent', [row({ id: '1' })])
     expect(text).toContain('While you were working, 1 AgentChat message arrived for @demo-agent')
     expect(text).toContain('silence is a valid outcome')
+  })
+
+  it('names the group and flags a mention from the server context block', () => {
+    const base = row({ id: '1', conversation_id: 'grp_ops', sender: 'bob' })
+    const enriched = {
+      ...base,
+      context: { conversation: { group_name: 'Ops' }, mentions: ['demo-agent'] },
+    } as unknown as SyncRow
+    const text = formatSessionStart('demo-agent', [enriched])
+    expect(text).toContain('group "Ops"')
+    expect(text).toContain('mentions you')
+    // A different agent's mention does not flag this one.
+    const other = formatSessionStart('someone-else', [enriched])
+    expect(other).not.toContain('mentions you')
+  })
+
+  it('adds a relative recency cue to each digest line', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-07-08T02:00:00Z')) // 2h after the fixture created_at
+    const text = formatSessionStart('demo-agent', [row({ id: '1' })])
+    expect(text).toContain('latest 2 hours ago')
+    // recency rides alongside the existing fields, not instead of them
+    expect(text).toContain('"hello 1"')
+    vi.useRealTimers()
   })
 })
 

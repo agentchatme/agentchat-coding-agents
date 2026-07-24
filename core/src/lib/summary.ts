@@ -1,4 +1,5 @@
-import type { SyncRow } from './wire.js'
+import { contextOf, type SyncRow } from './wire.js'
+import { relativeWhen } from './when.js'
 
 // ─── Unread digest formatting ───────────────────────────────────────────────
 //
@@ -14,6 +15,16 @@ interface ConversationDigest {
   senders: string[]
   count: number
   latestSnippet: string
+  /** created_at of the newest message in this conversation, for a relative
+   *  "latest N ago" recency cue that lets the agent triage by freshness.
+   *  Explicit `| undefined` so a row missing created_at is assignable under
+   *  exactOptionalPropertyTypes. */
+  latestCreatedAt?: string | undefined
+  /** Server-resolved group name (names the room instead of an opaque id). */
+  groupName?: string | null | undefined
+  /** True if any unread message in this conversation @-mentioned this agent —
+   *  a strong triage signal to open it first. */
+  mentionsYou?: boolean | undefined
 }
 
 const SNIPPET_MAX = 140
@@ -26,15 +37,24 @@ function snippetOf(row: SyncRow): string {
   return oneLine.length > SNIPPET_MAX ? `${oneLine.slice(0, SNIPPET_MAX - 1)}…` : oneLine
 }
 
-export function digestConversations(rows: SyncRow[]): ConversationDigest[] {
+export function digestConversations(
+  rows: SyncRow[],
+  selfHandle: string | null = null,
+): ConversationDigest[] {
+  const self = selfHandle?.replace(/^@/, '').toLowerCase() ?? null
   const byConversation = new Map<string, ConversationDigest>()
   for (const row of rows) {
     const sender = row.sender ?? row.sender_handle ?? 'unknown'
+    const ctx = contextOf(row)
+    const mentionsSelf = self !== null && ctx.mentions.includes(self)
     const existing = byConversation.get(row.conversation_id)
     if (existing) {
       existing.count += 1
       if (!existing.senders.includes(sender)) existing.senders.push(sender)
       existing.latestSnippet = snippetOf(row) // rows arrive oldest-first; last write wins
+      existing.latestCreatedAt = row.created_at ?? existing.latestCreatedAt
+      existing.groupName = ctx.groupName ?? existing.groupName
+      existing.mentionsYou = existing.mentionsYou || mentionsSelf
     } else {
       byConversation.set(row.conversation_id, {
         conversationId: row.conversation_id,
@@ -42,6 +62,9 @@ export function digestConversations(rows: SyncRow[]): ConversationDigest[] {
         senders: [sender],
         count: 1,
         latestSnippet: snippetOf(row),
+        latestCreatedAt: row.created_at,
+        groupName: ctx.groupName,
+        mentionsYou: mentionsSelf,
       })
     }
   }
@@ -51,14 +74,22 @@ export function digestConversations(rows: SyncRow[]): ConversationDigest[] {
 function digestLines(digests: ConversationDigest[]): string[] {
   return digests.map((d, i) => {
     const who = d.senders.map((s) => `@${s}`).join(', ')
-    const kind = d.isGroup ? `group ${d.conversationId}` : d.conversationId
+    // Name the room when the server resolved it; otherwise the opaque id.
+    const kind = d.isGroup
+      ? d.groupName
+        ? `group "${d.groupName}"`
+        : `group ${d.conversationId}`
+      : d.conversationId
     const count = d.count === 1 ? '1 message' : `${d.count} messages`
-    return `${i + 1}. ${who} (${count}, ${kind}): "${d.latestSnippet}"`
+    const age = relativeWhen(d.latestCreatedAt)
+    const recency = age ? `, latest ${age}` : ''
+    const mention = d.mentionsYou ? ' — mentions you' : ''
+    return `${i + 1}. ${who} (${count}, ${kind}${recency}${mention}): "${d.latestSnippet}"`
   })
 }
 
 export function formatSessionStart(handle: string | null, rows: SyncRow[]): string {
-  const digests = digestConversations(rows)
+  const digests = digestConversations(rows, handle)
   const total = rows.length
   // Never assert a handle we don't actually know — an agent will repeat it.
   const identity = handle ? `You are @${handle} on AgentChat. ` : 'AgentChat: '
@@ -75,7 +106,7 @@ export function formatSessionStart(handle: string | null, rows: SyncRow[]): stri
 }
 
 export function formatStopPickup(handle: string | null, rows: SyncRow[]): string {
-  const digests = digestConversations(rows)
+  const digests = digestConversations(rows, handle)
   const total = rows.length
   const addressee = handle ? ` for @${handle}` : ''
   return [
