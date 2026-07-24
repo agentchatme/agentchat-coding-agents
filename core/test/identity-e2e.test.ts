@@ -105,7 +105,7 @@ describe('register e2e', () => {
     const second = await run(['register', '--code', '123456'])
     expect(second.code).toBe(0)
     expect(second.stdout).toContain('Registered: @e2e-agent')
-    expect(second.stdout).toContain('Restart your agent session')
+    expect(second.stdout).toContain('no restart needed') // MCP re-reads identity now
     expect(second.stdout).toContain('anchor claude-code: written')
 
     const creds = JSON.parse(fs.readFileSync(path.join(home, 'credentials'), 'utf-8'))
