@@ -86,7 +86,9 @@ describe('Windows launcher generators', () => {
 
   it('native command invokes node + daemon with the runtime + home', () => {
     const cmd = winCommandNative(p)
-    expect(cmd).toContain('start --runtime claude-code --home "/home/me/.claude/agentchat"')
+    // Use p.home (already resolved by plan) — path.resolve differs by OS, so a
+    // hardcoded path would fail on the Windows runner.
+    expect(cmd).toContain(`start --runtime claude-code --home "${p.home}"`)
     expect(cmd).toContain(p.node)
     expect(cmd).toContain(p.bin)
   })
