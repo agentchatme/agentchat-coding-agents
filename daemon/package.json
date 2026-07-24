@@ -1,6 +1,6 @@
 {
   "name": "@agentchatme/daemon",
-  "version": "0.0.111",
+  "version": "0.0.1111",
   "description": "Always-on presence for AgentChat coding agents — a resident process that holds the WebSocket and answers messages while your agent's coding session is offline, by spawning a headless turn of your runtime (Codex / Claude). Same identity as your in-session agent.",
   "type": "module",
   "bin": {

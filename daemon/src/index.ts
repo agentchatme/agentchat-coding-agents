@@ -8,7 +8,7 @@ import type { RuntimeAdapter } from './adapters/types.js'
 import { installService, uninstallService, serviceStatus, enableService, disableService } from './service.js'
 import { log } from './log.js'
 
-const VERSION = '0.0.1'
+const VERSION = '0.0.1111'
 
 const USAGE = `agentchatd ${VERSION} — always-on presence for an AgentChat coding agent
 
