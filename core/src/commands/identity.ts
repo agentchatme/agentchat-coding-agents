@@ -82,10 +82,11 @@ async function prompt(question: string): Promise<string> {
   }
 }
 
-// The MCP server in an already-open session validated credentials at its
-// startup — a fresh identity is only picked up on reconnect.
+// The MCP server (@agentchatme/mcp ≥ 0.1.111) re-resolves its identity on every
+// tool call, so a mid-session register/login is picked up immediately — no
+// restart. The soft fallback covers anyone still on an older cached MCP.
 const RESTART_HINT =
-  'Restart your agent session (Claude Code: start a new session, or /mcp → reconnect) so the messaging tools pick up this identity.'
+  'Your messaging tools pick this up immediately — no restart needed. (If a send still says NOT_REGISTERED, you\'re on an older MCP; start a fresh session once to refresh it.)'
 
 /** Install anchors for every platform whose host directory exists. */
 function autoAnchor(handle: string): string[] {
