@@ -16,6 +16,25 @@ export interface TurnContext {
   sender: string
   /** The message text (snippet — the agent re-reads full context via MCP). */
   text: string
+  /** The message's `created_at` (ISO-8601 UTC). A headless turn has no clock;
+   *  surfacing this lets it judge staleness/urgency before deciding to reply.
+   *  Explicit `| undefined` so daemon.ts can pass through an absent stamp under
+   *  exactOptionalPropertyTypes. */
+  createdAt?: string | undefined
+  /** Message type ('text' | 'structured' | 'file' | 'system'). Lets a non-text
+   *  message render a clear placeholder instead of an empty body. */
+  type?: string | undefined
+  // ─ Platform-authored trusted context (server `message.context`) ─
+  /** Sender's resolved display name, or null when unset / no context block. */
+  senderDisplayName?: string | null | undefined
+  /** 'system' = platform agent (authoritative); 'agent' = peer. */
+  senderKind?: 'agent' | 'system' | undefined
+  /** Group's human-readable name (null for DMs / when the server omitted it). */
+  groupName?: string | null | undefined
+  /** True when THIS agent's handle is in the server-parsed mention list. The
+   *  daemon computes membership (it knows its own handle) so the adapter just
+   *  renders the positive fact. */
+  mentioned?: boolean | undefined
 }
 
 export interface TurnResult {

@@ -4401,6 +4401,19 @@ var SyncRowSchema = external_exports.object({
   content: external_exports.record(external_exports.unknown()).optional(),
   created_at: external_exports.string().optional()
 }).passthrough();
+function contextOf(row) {
+  const raw = row.context;
+  const c = raw && typeof raw === "object" ? raw : {};
+  const sender = c.sender && typeof c.sender === "object" ? c.sender : {};
+  const conv = c.conversation && typeof c.conversation === "object" ? c.conversation : {};
+  return {
+    senderDisplayName: typeof sender.display_name === "string" ? sender.display_name : null,
+    senderKind: sender.kind === "system" ? "system" : "agent",
+    groupName: typeof conv.group_name === "string" ? conv.group_name : null,
+    memberCount: typeof conv.member_count === "number" ? conv.member_count : null,
+    mentions: Array.isArray(c.mentions) ? c.mentions.filter((m) => typeof m === "string").map((m) => m.toLowerCase()) : []
+  };
+}
 var DEFAULT_TIMEOUT_MS = 4e3;
 async function request(cfg, method, pathname, body) {
   const url = cfg.apiBase.replace(/\/+$/, "") + pathname;
@@ -4491,6 +4504,27 @@ function lastDeliveryId(rows) {
   return null;
 }
 
+// src/lib/when.ts
+var SEC = 1e3;
+var MIN = 60 * SEC;
+var HOUR = 60 * MIN;
+var DAY = 24 * HOUR;
+function relativeAge(ms) {
+  if (ms < 45 * SEC) return "just now";
+  if (ms < 90 * SEC) return "1 minute ago";
+  if (ms < 45 * MIN) return `${Math.round(ms / MIN)} minutes ago`;
+  if (ms < 90 * MIN) return "1 hour ago";
+  if (ms < 22 * HOUR) return `${Math.round(ms / HOUR)} hours ago`;
+  if (ms < 36 * HOUR) return "1 day ago";
+  return `${Math.round(ms / DAY)} days ago`;
+}
+function relativeWhen(createdAt, now2 = Date.now()) {
+  if (!createdAt) return "";
+  const t = Date.parse(createdAt);
+  if (Number.isNaN(t)) return "";
+  return relativeAge(Math.max(0, now2 - t));
+}
+
 // src/lib/summary.ts
 var SNIPPET_MAX = 140;
 function snippetOf(row) {
@@ -4500,22 +4534,31 @@ function snippetOf(row) {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > SNIPPET_MAX ? `${oneLine.slice(0, SNIPPET_MAX - 1)}\u2026` : oneLine;
 }
-function digestConversations(rows) {
+function digestConversations(rows, selfHandle = null) {
+  const self = selfHandle?.replace(/^@/, "").toLowerCase() ?? null;
   const byConversation = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const sender = row.sender ?? row.sender_handle ?? "unknown";
+    const ctx = contextOf(row);
+    const mentionsSelf = self !== null && ctx.mentions.includes(self);
     const existing = byConversation.get(row.conversation_id);
     if (existing) {
       existing.count += 1;
       if (!existing.senders.includes(sender)) existing.senders.push(sender);
       existing.latestSnippet = snippetOf(row);
+      existing.latestCreatedAt = row.created_at ?? existing.latestCreatedAt;
+      existing.groupName = ctx.groupName ?? existing.groupName;
+      existing.mentionsYou = existing.mentionsYou || mentionsSelf;
     } else {
       byConversation.set(row.conversation_id, {
         conversationId: row.conversation_id,
         isGroup: row.conversation_id.startsWith("grp_"),
         senders: [sender],
         count: 1,
-        latestSnippet: snippetOf(row)
+        latestSnippet: snippetOf(row),
+        latestCreatedAt: row.created_at,
+        groupName: ctx.groupName,
+        mentionsYou: mentionsSelf
       });
     }
   }
@@ -4524,13 +4567,16 @@ function digestConversations(rows) {
 function digestLines(digests) {
   return digests.map((d, i) => {
     const who = d.senders.map((s) => `@${s}`).join(", ");
-    const kind = d.isGroup ? `group ${d.conversationId}` : d.conversationId;
+    const kind = d.isGroup ? d.groupName ? `group "${d.groupName}"` : `group ${d.conversationId}` : d.conversationId;
     const count = d.count === 1 ? "1 message" : `${d.count} messages`;
-    return `${i + 1}. ${who} (${count}, ${kind}): "${d.latestSnippet}"`;
+    const age = relativeWhen(d.latestCreatedAt);
+    const recency = age ? `, latest ${age}` : "";
+    const mention = d.mentionsYou ? " \u2014 mentions you" : "";
+    return `${i + 1}. ${who} (${count}, ${kind}${recency}${mention}): "${d.latestSnippet}"`;
   });
 }
 function formatSessionStart(handle, rows) {
-  const digests = digestConversations(rows);
+  const digests = digestConversations(rows, handle);
   const total = rows.length;
   const identity = handle ? `You are @${handle} on AgentChat. ` : "AgentChat: ";
   const header = identity + `${total} unread message${total === 1 ? "" : "s"} in ${digests.length} conversation${digests.length === 1 ? "" : "s"}:`;
@@ -4543,7 +4589,7 @@ function formatSessionStart(handle, rows) {
   ].join("\n");
 }
 function formatStopPickup(handle, rows) {
-  const digests = digestConversations(rows);
+  const digests = digestConversations(rows, handle);
   const total = rows.length;
   const addressee = handle ? ` for @${handle}` : "";
   return [

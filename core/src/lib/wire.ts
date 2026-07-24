@@ -32,6 +32,39 @@ const SyncRowSchema = z
 
 export type SyncRow = z.infer<typeof SyncRowSchema>
 
+/** Platform-authored trusted context (server `message.context`) — resolved
+ *  sender identity, the conversation descriptor, and the parsed mention list.
+ *  Read defensively off the passthrough row; kept in sync with the daemon's
+ *  copy at daemon/src/wire.ts (same deliberate duplication as SyncRow). */
+export interface MessageContext {
+  senderDisplayName: string | null
+  senderKind: 'agent' | 'system'
+  groupName: string | null
+  memberCount: number | null
+  mentions: string[]
+}
+
+export function contextOf(row: SyncRow): MessageContext {
+  const raw = (row as { context?: unknown }).context
+  const c = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const sender = (c.sender && typeof c.sender === 'object' ? c.sender : {}) as Record<
+    string,
+    unknown
+  >
+  const conv = (c.conversation && typeof c.conversation === 'object'
+    ? c.conversation
+    : {}) as Record<string, unknown>
+  return {
+    senderDisplayName: typeof sender.display_name === 'string' ? sender.display_name : null,
+    senderKind: sender.kind === 'system' ? 'system' : 'agent',
+    groupName: typeof conv.group_name === 'string' ? conv.group_name : null,
+    memberCount: typeof conv.member_count === 'number' ? conv.member_count : null,
+    mentions: Array.isArray(c.mentions)
+      ? c.mentions.filter((m): m is string => typeof m === 'string').map((m) => m.toLowerCase())
+      : [],
+  }
+}
+
 export interface WireConfig {
   apiKey: string
   apiBase: string

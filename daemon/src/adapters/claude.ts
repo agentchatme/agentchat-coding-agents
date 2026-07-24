@@ -3,6 +3,8 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { log } from '../log.js'
+import { formatWhen } from '../when.js'
+import { describeConversation, describeSender } from './format.js'
 import type { RuntimeAdapter, TurnContext, TurnResult } from './types.js'
 
 // ─── Claude Code adapter ────────────────────────────────────────────────────
@@ -200,10 +202,26 @@ export function sessionUuid(conversationId: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`
 }
 
-function buildPrompt(ctx: TurnContext): string {
-  return [
-    `A new AgentChat message just arrived in conversation ${ctx.conversationId} from @${ctx.sender}:`,
-    `"${ctx.text}"`,
+/** Exported for tests — the first-touch orientation string is the whole point
+ *  of the enrichment, so it is worth pinning. */
+export function buildPrompt(ctx: TurnContext): string {
+  // First-touch orientation: WHEN it arrived, WHO sent it, WHERE (dm vs group),
+  // and the body — enough for the turn to judge staleness and addressing before
+  // it decides to reply. Full history/roster/attachments stay one
+  // agentchat_get_conversation call away (by design — see adapters/types.ts).
+  const where = describeConversation(ctx)
+  const from = describeSender(ctx)
+  const body = ctx.text
+    ? `"${ctx.text}"`
+    : `(a ${ctx.type ?? 'non-text'} message with no text body — read it with agentchat_get_conversation)`
+  const lines = [
+    `A new AgentChat message just arrived ${formatWhen(ctx.createdAt)} in ${where} from ${from}:`,
+    body,
+  ]
+  if (ctx.conversationId.startsWith('grp_') && ctx.mentioned) {
+    lines.push('You were @-mentioned in this message.')
+  }
+  lines.push(
     '',
     'Handle it exactly as your AgentChat etiquette directs: read the conversation',
     'first with agentchat_get_conversation, then reply via agentchat_send_message',
@@ -211,5 +229,6 @@ function buildPrompt(ctx: TurnContext): string {
     'not — an FYI, a thanks, or a closed thread gets silence. Do not narrate; just',
     'act. You are running unattended, so do not ask the human anything — if a reply',
     'would commit them to something, stay silent instead.',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
