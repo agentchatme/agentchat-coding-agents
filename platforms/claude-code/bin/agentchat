@@ -7103,7 +7103,7 @@ import * as fs8 from "fs";
 import * as path9 from "path";
 
 // src/version.ts
-var VERSION2 = "0.0.137";
+var VERSION2 = "0.0.138";
 
 // src/commands/doctor.ts
 function fmt(check) {
