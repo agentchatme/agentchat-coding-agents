@@ -4709,8 +4709,8 @@ async function runStopHook(platform) {
 }
 
 // src/commands/identity.ts
-import * as fs5 from "fs";
-import * as path6 from "path";
+import * as fs6 from "fs";
+import * as path7 from "path";
 import * as readline from "readline/promises";
 
 // ../node_modules/.pnpm/agentchatme@1.0.2_ws@8.21.1/node_modules/agentchatme/dist/index.js
@@ -6306,6 +6306,107 @@ function removeCodex() {
   return removed;
 }
 
+// src/commands/daemon.ts
+import * as fs5 from "fs";
+import * as os3 from "os";
+import * as path6 from "path";
+import { spawnSync } from "child_process";
+var DAEMON_PKG = "@agentchatme/daemon";
+function runtimeDir() {
+  return path6.join(os3.homedir(), ".agentchat", "daemon-runtime");
+}
+function daemonEntry() {
+  return path6.join(runtimeDir(), "node_modules", "@agentchatme", "daemon", "dist", "index.js");
+}
+function ensureDaemon() {
+  if (fs5.existsSync(daemonEntry())) return { ok: true };
+  const dir = runtimeDir();
+  try {
+    fs5.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    return { ok: false, detail: `could not create ${dir}: ${String(err)}` };
+  }
+  const r = spawnSync(
+    "npm",
+    ["install", DAEMON_PKG, "--prefix", dir, "--no-save", "--no-audit", "--no-fund"],
+    { encoding: "utf-8", timeout: 18e4 }
+  );
+  if (r.error || r.status !== 0) {
+    const why = (r.stderr || r.error && r.error.message || "unknown error").slice(0, 300);
+    return { ok: false, detail: `npm install ${DAEMON_PKG} failed: ${why}` };
+  }
+  return fs5.existsSync(daemonEntry()) ? { ok: true } : { ok: false, detail: "installed but entrypoint missing" };
+}
+function runDaemon(args) {
+  const r = spawnSync(process.execPath, [daemonEntry(), ...args], { stdio: "inherit" });
+  return r.status ?? 1;
+}
+function tryInstallDaemon(platform, home) {
+  const got = ensureDaemon();
+  if (!got.ok) return { ok: false, detail: got.detail ?? "runtime fetch failed" };
+  const r = spawnSync(
+    process.execPath,
+    [daemonEntry(), "install", "--runtime", platform, "--home", home],
+    { encoding: "utf-8", timeout: 12e4 }
+  );
+  if (r.error || r.status !== 0) {
+    const raw = r.stderr || r.stdout || r.error?.message || "";
+    return { ok: false, detail: raw.slice(0, 300).trim() || "service install failed" };
+  }
+  return { ok: true };
+}
+async function runDaemonCmd(sub, platform) {
+  if (platform === "cursor") {
+    console.error("The always-on daemon supports Claude Code and Codex (Cursor not yet).");
+    return 1;
+  }
+  const runtime = platform;
+  const bound = process.env["AGENTCHAT_HOME"]?.trim();
+  const home = bound && bound.length > 0 ? bound : hostHome(platform);
+  if (sub === "install") {
+    const creds = readCredentialsFileAt(home);
+    if (creds === null) {
+      console.error(
+        `No AgentChat identity for ${platform} yet. Register first, then run:
+  agentchat daemon install --platform ${platform}`
+      );
+      return 1;
+    }
+    const got = ensureDaemon();
+    if (!got.ok) {
+      console.error(`Couldn't set up always-on automatically: ${got.detail}`);
+      console.error(`Finish it by hand:
+  npm i -g ${DAEMON_PKG}
+  agentchatd install --runtime ${runtime}`);
+      return 1;
+    }
+    const code = runDaemon(["install", "--runtime", runtime, "--home", home]);
+    if (code === 0) {
+      console.log(
+        [
+          "",
+          `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
+          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
+        ].join("\n")
+      );
+    }
+    return code;
+  }
+  if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
+    if (!fs5.existsSync(daemonEntry())) {
+      if (sub === "status") {
+        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
+        return 0;
+      }
+      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
+      return sub === "disable" ? 0 : 1;
+    }
+    return runDaemon([sub, "--runtime", runtime, "--home", home]);
+  }
+  console.error("Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>");
+  return 1;
+}
+
 // src/commands/identity.ts
 var HANDLE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 function describeApiError(err) {
@@ -6344,7 +6445,7 @@ var RESTART_HINT = "Your messaging tools pick this up immediately \u2014 no rest
 function autoAnchor(handle) {
   const lines = [];
   const ccFile = anchorFilePath("claude-code");
-  if (ccFile !== null && fs5.existsSync(path6.dirname(ccFile))) {
+  if (ccFile !== null && fs6.existsSync(path7.dirname(ccFile))) {
     try {
       installAnchor("claude-code", handle);
       lines.push(`  anchor claude-code: written \u2192 ${ccFile}`);
@@ -6353,16 +6454,34 @@ function autoAnchor(handle) {
     }
   }
   const codexAgents = anchorFilePath("codex");
-  if (codexAgents !== null && fs5.existsSync(codexAgents)) {
+  if (codexAgents !== null && fs6.existsSync(codexAgents)) {
     try {
-      const existing = fs5.readFileSync(codexAgents, "utf-8");
-      fs5.writeFileSync(codexAgents, upsertAnchorBlock(existing, renderCodexAgents(handle)), "utf-8");
+      const existing = fs6.readFileSync(codexAgents, "utf-8");
+      fs6.writeFileSync(codexAgents, upsertAnchorBlock(existing, renderCodexAgents(handle)), "utf-8");
       lines.push(`  AGENTS.md codex: refreshed \u2192 ${codexAgents}`);
     } catch (err) {
       lines.push(`  AGENTS.md codex: FAILED \u2014 ${String(err)}`);
     }
   }
   return lines;
+}
+function autoDaemon(platform) {
+  if (platform === void 0 || platform === "cursor") {
+    return [
+      "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` for session-only)."
+    ];
+  }
+  const home = process.env["AGENTCHAT_HOME"]?.trim() || hostHome(platform);
+  process.stderr.write("Setting up always-on (one-time)\u2026\n");
+  const res = tryInstallDaemon(platform, home);
+  if (res.ok) {
+    return [
+      `Always-on is ON \u2014 you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`agentchat daemon disable --platform ${platform}\`.`
+    ];
+  }
+  return [
+    `(Always-on didn't auto-start: ${res.detail.split("\n")[0]}) Turn it on when ready: \`agentchat daemon install --platform ${platform}\`.`
+  ];
 }
 async function runRegister(opts) {
   const apiBase = opts.apiBase ?? process.env["AGENTCHAT_API_BASE"] ?? DEFAULT_API_BASE;
@@ -6407,7 +6526,7 @@ async function runRegister(opts) {
           "",
           "This identity is scoped to this coding agent \u2014 each coding agent on the machine gets its own handle.",
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
-          "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` switches to session-only).",
+          ...autoDaemon(opts.platform),
           RESTART_HINT
         ].join("\n")
       );
@@ -6513,7 +6632,7 @@ async function runLogin(opts) {
       [
         `Signed in as @${me.handle}.`,
         ...anchorReport,
-        "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` for session-only).",
+        ...autoDaemon(opts.platform),
         RESTART_HINT
       ].join("\n")
     );
@@ -6552,6 +6671,7 @@ async function runRecover(opts) {
         [
           `Recovered: @${result.handle} \u2014 a fresh API key is stored (the old key is now revoked).`,
           ...anchorReport,
+          ...autoDaemon(opts.platform),
           RESTART_HINT
         ].join("\n")
       );
@@ -6775,10 +6895,10 @@ function runLogout() {
 }
 
 // src/commands/install.ts
-import * as fs6 from "fs";
-import * as os3 from "os";
-import * as path7 from "path";
-import { spawnSync } from "child_process";
+import * as fs7 from "fs";
+import * as os4 from "os";
+import * as path8 from "path";
+import { spawnSync as spawnSync2 } from "child_process";
 var MARKETPLACE_SLUG = "agentchatme/agentchat-coding-agents";
 var PLUGIN_REF = "agentchat@agentchatme";
 var PROBES = [
@@ -6787,18 +6907,18 @@ var PROBES = [
   { key: "cursor", label: "Cursor", binary: "cursor-agent", configDir: ".cursor" }
 ];
 function defaultRun(cmd, args) {
-  const result = spawnSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
+  const result = spawnSync2(cmd, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 6e4 });
   if (result.error) return null;
   return result.status;
 }
 function binaryOnPath(binary, env) {
   const pathVar = env["PATH"] ?? "";
   const exts = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
-  for (const dir of pathVar.split(path7.delimiter)) {
+  for (const dir of pathVar.split(path8.delimiter)) {
     if (dir.length === 0) continue;
     for (const ext of exts) {
       try {
-        if (fs6.existsSync(path7.join(dir, binary + ext))) return true;
+        if (fs7.existsSync(path8.join(dir, binary + ext))) return true;
       } catch {
       }
     }
@@ -6807,13 +6927,13 @@ function binaryOnPath(binary, env) {
 }
 function detectPlatforms(env, home) {
   return PROBES.filter(
-    (p) => binaryOnPath(p.binary, env) || fs6.existsSync(path7.join(home, p.configDir))
+    (p) => binaryOnPath(p.binary, env) || fs7.existsSync(path8.join(home, p.configDir))
   );
 }
 async function runInstall(deps = {}) {
   const run = deps.run ?? defaultRun;
   const env = deps.env ?? process.env;
-  const home = deps.homedir ?? os3.homedir();
+  const home = deps.homedir ?? os4.homedir();
   const detected = detectPlatforms(env, home);
   if (detected.length === 0) {
     console.log(
@@ -6890,8 +7010,8 @@ Signed in: ${have.join(", ")}`);
 }
 
 // src/commands/doctor.ts
-import * as fs7 from "fs";
-import * as path8 from "path";
+import * as fs8 from "fs";
+import * as path9 from "path";
 
 // src/version.ts
 var VERSION2 = "0.0.135";
@@ -6960,8 +7080,8 @@ async function runDoctor() {
   for (const platform of ["claude-code", "codex"]) {
     const file = anchorFilePath(platform);
     if (file === null) continue;
-    const hostDir = path8.dirname(file);
-    if (!fs7.existsSync(hostDir)) {
+    const hostDir = path9.dirname(file);
+    if (!fs8.existsSync(hostDir)) {
       checks.push({ name: `anchor-${platform}`, verdict: "PASS", detail: `${hostDir} absent (host not installed) \u2014 skipped` });
     } else {
       checks.push({
@@ -6972,8 +7092,8 @@ async function runDoctor() {
     }
   }
   try {
-    fs7.mkdirSync(agentchatHome(), { recursive: true });
-    fs7.accessSync(agentchatHome(), fs7.constants.W_OK);
+    fs8.mkdirSync(agentchatHome(), { recursive: true });
+    fs8.accessSync(agentchatHome(), fs8.constants.W_OK);
     checks.push({ name: "state", verdict: "PASS", detail: `${statePath()} writable` });
   } catch {
     checks.push({ name: "state", verdict: "FAIL", detail: `${agentchatHome()} is not writable` });
@@ -7004,93 +7124,6 @@ async function runAnchor(action, platform) {
     result.action === "unsupported" ? `${platform} has no global instruction file \u2014 the plugin rule + session hook cover identity there instead.` : `anchor ${platform}: ${result.action} (${result.path})`
   );
   return 0;
-}
-
-// src/commands/daemon.ts
-import * as fs8 from "fs";
-import * as os4 from "os";
-import * as path9 from "path";
-import { spawnSync as spawnSync2 } from "child_process";
-var DAEMON_PKG = "@agentchatme/daemon";
-function runtimeDir() {
-  return path9.join(os4.homedir(), ".agentchat", "daemon-runtime");
-}
-function daemonEntry() {
-  return path9.join(runtimeDir(), "node_modules", "@agentchatme", "daemon", "dist", "index.js");
-}
-function ensureDaemon() {
-  if (fs8.existsSync(daemonEntry())) return { ok: true };
-  const dir = runtimeDir();
-  try {
-    fs8.mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    return { ok: false, detail: `could not create ${dir}: ${String(err)}` };
-  }
-  const r = spawnSync2(
-    "npm",
-    ["install", DAEMON_PKG, "--prefix", dir, "--no-save", "--no-audit", "--no-fund"],
-    { encoding: "utf-8", timeout: 18e4 }
-  );
-  if (r.error || r.status !== 0) {
-    const why = (r.stderr || r.error && r.error.message || "unknown error").slice(0, 300);
-    return { ok: false, detail: `npm install ${DAEMON_PKG} failed: ${why}` };
-  }
-  return fs8.existsSync(daemonEntry()) ? { ok: true } : { ok: false, detail: "installed but entrypoint missing" };
-}
-function runDaemon(args) {
-  const r = spawnSync2(process.execPath, [daemonEntry(), ...args], { stdio: "inherit" });
-  return r.status ?? 1;
-}
-async function runDaemonCmd(sub, platform) {
-  if (platform === "cursor") {
-    console.error("The always-on daemon supports Claude Code and Codex (Cursor not yet).");
-    return 1;
-  }
-  const runtime = platform;
-  const bound = process.env["AGENTCHAT_HOME"]?.trim();
-  const home = bound && bound.length > 0 ? bound : hostHome(platform);
-  if (sub === "install") {
-    const creds = readCredentialsFileAt(home);
-    if (creds === null) {
-      console.error(
-        `No AgentChat identity for ${platform} yet. Register first, then run:
-  agentchat daemon install --platform ${platform}`
-      );
-      return 1;
-    }
-    const got = ensureDaemon();
-    if (!got.ok) {
-      console.error(`Couldn't set up always-on automatically: ${got.detail}`);
-      console.error(`Finish it by hand:
-  npm i -g ${DAEMON_PKG}
-  agentchatd install --runtime ${runtime}`);
-      return 1;
-    }
-    const code = runDaemon(["install", "--runtime", runtime, "--home", home]);
-    if (code === 0) {
-      console.log(
-        [
-          "",
-          `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
-          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
-        ].join("\n")
-      );
-    }
-    return code;
-  }
-  if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
-    if (!fs8.existsSync(daemonEntry())) {
-      if (sub === "status") {
-        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
-        return 0;
-      }
-      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
-      return sub === "disable" ? 0 : 1;
-    }
-    return runDaemon([sub, "--runtime", runtime, "--home", home]);
-  }
-  console.error("Usage: agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>");
-  return 1;
 }
 
 // src/index.ts
@@ -7163,18 +7196,21 @@ async function main(argv = process.argv.slice(2)) {
         ...values["display-name"] !== void 0 ? { displayName: values["display-name"] } : {},
         ...values.description !== void 0 ? { description: values.description } : {},
         ...values.code !== void 0 ? { code: values.code } : {},
-        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {}
+        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
+        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
       });
     case "login":
       return runLogin({
         ...values["api-key"] !== void 0 ? { apiKey: values["api-key"] } : {},
-        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {}
+        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
+        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
       });
     case "recover":
       return runRecover({
         ...values.email !== void 0 ? { email: values.email } : {},
         ...values.code !== void 0 ? { code: values.code } : {},
-        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {}
+        ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
+        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
       });
     case "status":
       return runStatus({ ...values.json !== void 0 ? { json: values.json } : {} });

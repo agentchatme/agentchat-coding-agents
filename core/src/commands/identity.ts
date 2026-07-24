@@ -16,6 +16,7 @@ import { credentialsPath, hostHome, legacyMachineHome } from '../lib/paths.js'
 import { installAnchor, removeAnchor, hasAnchor, anchorFilePath, upsertAnchorBlock } from '../lib/anchor.js'
 import { removeCodex, renderCodexAgents } from '../lib/codex-config.js'
 import { syncPeek } from '../lib/wire.js'
+import { tryInstallDaemon } from './daemon.js'
 import type { Platform } from '../lib/dialect.js'
 
 // ─── Identity commands ──────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ export interface RegisterOpts {
   description?: string
   code?: string
   apiBase?: string
+  platform?: Platform
 }
 
 interface ApiErrorLike {
@@ -118,6 +120,37 @@ function autoAnchor(handle: string): string[] {
   return lines
 }
 
+/**
+ * Turn on always-on the instant an identity exists (best-effort), so "on by
+ * default" is one motion instead of a second command the agent must remember.
+ * Returns the lines to append to the success output: a past-tense confirmation
+ * when it worked, or the manual pointer (the prior behavior) when it didn't or
+ * when we don't know which host to target. Never blocks the identity itself.
+ * Exported for unit tests (the install itself is stubbed there).
+ */
+export function autoDaemon(platform: Platform | undefined): string[] {
+  // No --platform (a bare `agentchat register` in a shell) or Cursor (no daemon
+  // yet) → we can't tell which host to make reachable, so point at the command.
+  if (platform === undefined || platform === 'cursor') {
+    return [
+      "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` for session-only).",
+    ]
+  }
+  const home = process.env['AGENTCHAT_HOME']?.trim() || hostHome(platform)
+  // The first-ever call fetches the runtime (a few seconds) — say so on stderr
+  // so a human at a TTY isn't staring at a silent hang. Agents ignore ordering.
+  process.stderr.write('Setting up always-on (one-time)…\n')
+  const res = tryInstallDaemon(platform, home)
+  if (res.ok) {
+    return [
+      `Always-on is ON — you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`agentchat daemon disable --platform ${platform}\`.`,
+    ]
+  }
+  return [
+    `(Always-on didn't auto-start: ${res.detail.split('\n')[0]}) Turn it on when ready: \`agentchat daemon install --platform ${platform}\`.`,
+  ]
+}
+
 export async function runRegister(opts: RegisterOpts): Promise<number> {
   const apiBase = opts.apiBase ?? process.env['AGENTCHAT_API_BASE'] ?? DEFAULT_API_BASE
 
@@ -163,7 +196,7 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
           '',
           'This identity is scoped to this coding agent — each coding agent on the machine gets its own handle.',
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
-          "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` switches to session-only).",
+          ...autoDaemon(opts.platform),
           RESTART_HINT,
         ].join('\n'),
       )
@@ -248,7 +281,11 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
   }
 }
 
-export async function runLogin(opts: { apiKey?: string; apiBase?: string }): Promise<number> {
+export async function runLogin(opts: {
+  apiKey?: string
+  apiBase?: string
+  platform?: Platform
+}): Promise<number> {
   const apiBase = opts.apiBase ?? process.env['AGENTCHAT_API_BASE'] ?? DEFAULT_API_BASE
   let apiKey = opts.apiKey?.trim()
 
@@ -278,7 +315,7 @@ export async function runLogin(opts: { apiKey?: string; apiBase?: string }): Pro
       [
         `Signed in as @${me.handle}.`,
         ...anchorReport,
-        "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` for session-only).",
+        ...autoDaemon(opts.platform),
         RESTART_HINT,
       ].join('\n'),
     )
@@ -298,6 +335,7 @@ export async function runRecover(opts: {
   email?: string
   code?: string
   apiBase?: string
+  platform?: Platform
 }): Promise<number> {
   const apiBase = opts.apiBase ?? process.env['AGENTCHAT_API_BASE'] ?? DEFAULT_API_BASE
 
@@ -328,6 +366,7 @@ export async function runRecover(opts: {
         [
           `Recovered: @${result.handle} — a fresh API key is stored (the old key is now revoked).`,
           ...anchorReport,
+          ...autoDaemon(opts.platform),
           RESTART_HINT,
         ].join('\n'),
       )

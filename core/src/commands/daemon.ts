@@ -57,6 +57,32 @@ function runDaemon(args: string[]): number {
   return r.status ?? 1
 }
 
+/**
+ * Best-effort always-on setup, called straight after register/login/recover so
+ * "on by default" is one motion, not a second command the agent has to run.
+ * Fetches the runtime and installs the per-host service, but CAPTURES output
+ * (unlike `runDaemon`) so the happy path stays silent — the caller prints one
+ * clean confirmation line — and only failure detail surfaces. Never throws: an
+ * identity is valid with or without always-on, so this must not gate register.
+ */
+export function tryInstallDaemon(
+  platform: 'claude-code' | 'codex',
+  home: string,
+): { ok: true } | { ok: false; detail: string } {
+  const got = ensureDaemon()
+  if (!got.ok) return { ok: false, detail: got.detail ?? 'runtime fetch failed' }
+  const r = spawnSync(
+    process.execPath,
+    [daemonEntry(), 'install', '--runtime', platform, '--home', home],
+    { encoding: 'utf-8', timeout: 120_000 },
+  )
+  if (r.error || r.status !== 0) {
+    const raw = (r.stderr || r.stdout || r.error?.message || '') as string
+    return { ok: false, detail: raw.slice(0, 300).trim() || 'service install failed' }
+  }
+  return { ok: true }
+}
+
 export async function runDaemonCmd(sub: string | undefined, platform: Platform): Promise<number> {
   if (platform === 'cursor') {
     console.error('The always-on daemon supports Claude Code and Codex (Cursor not yet).')

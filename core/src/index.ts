@@ -91,12 +91,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         ...(values.description !== undefined ? { description: values.description } : {}),
         ...(values.code !== undefined ? { code: values.code } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
+        ...(values.platform !== undefined && isPlatform(values.platform)
+          ? { platform: values.platform }
+          : {}),
       })
 
     case 'login':
       return runLogin({
         ...(values['api-key'] !== undefined ? { apiKey: values['api-key'] } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
+        ...(values.platform !== undefined && isPlatform(values.platform)
+          ? { platform: values.platform }
+          : {}),
       })
 
     case 'recover':
@@ -104,6 +110,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         ...(values.email !== undefined ? { email: values.email } : {}),
         ...(values.code !== undefined ? { code: values.code } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
+        ...(values.platform !== undefined && isPlatform(values.platform)
+          ? { platform: values.platform }
+          : {}),
       })
 
     case 'status':

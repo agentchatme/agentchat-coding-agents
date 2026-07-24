@@ -71,7 +71,10 @@ beforeEach(() => {
   fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-idhome-'))
 })
 
-async function run(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+async function run(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
     const { stdout, stderr } = await exec(process.execPath, [BIN, ...args], {
       env: {
@@ -82,6 +85,7 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
         AGENTCHAT_API_KEY: '',
         AGENTCHAT_API_BASE: '',
         AGENTCHAT_LOG_LEVEL: 'silent',
+        ...extraEnv,
       },
     })
     return { code: 0, stdout, stderr }
@@ -107,6 +111,8 @@ describe('register e2e', () => {
     expect(second.stdout).toContain('Registered: @e2e-agent')
     expect(second.stdout).toContain('no restart needed') // MCP re-reads identity now
     expect(second.stdout).toContain('anchor claude-code: written')
+    // No --platform here → always-on shows the manual pointer, never fetches/installs.
+    expect(second.stdout).toContain('daemon install')
 
     const creds = JSON.parse(fs.readFileSync(path.join(home, 'credentials'), 'utf-8'))
     expect(creds).toMatchObject({ api_key: NEW_KEY, handle: 'e2e-agent', api_base: base })
@@ -116,6 +122,26 @@ describe('register e2e', () => {
     }
     expect(fs.existsSync(path.join(home, 'pending.json'))).toBe(false)
     expect(fs.readFileSync(path.join(fakeHome, '.claude', 'CLAUDE.md'), 'utf-8')).toContain('@e2e-agent')
+  })
+
+  it('--platform auto-starts always-on; a missing npm degrades to the manual pointer, never a crash', async () => {
+    // PATH points at a dir with no `npm`, so the daemon runtime fetch fails fast
+    // INSIDE ensureDaemon — the service installer is never reached, so this test
+    // installs nothing on the host. It proves the real wiring: the --platform
+    // flag reaches autoDaemon, the attempt is made, and failure is graceful.
+    const noNpm = { PATH: path.join(os.tmpdir(), 'agentchat-no-npm-here') }
+    fs.mkdirSync(path.join(fakeHome, '.claude'))
+    await run(
+      ['register', '--email', 'dev@example.com', '--handle', 'e2e-agent', '--api-base', base, '--platform', 'claude-code'],
+      noNpm,
+    )
+    const done = await run(['register', '--code', '123456', '--platform', 'claude-code'], noNpm)
+
+    expect(done.code).toBe(0) // identity succeeds even though always-on couldn't
+    expect(done.stdout).toContain('Registered: @e2e-agent')
+    expect(done.stdout).toContain("didn't auto-start") // graceful fallback, not a stack trace
+    expect(done.stdout).toContain('daemon install --platform claude-code')
+    expect(fs.existsSync(path.join(home, 'credentials'))).toBe(true) // credentials still written
   })
 
   it('surfaces HANDLE_TAKEN with actionable copy and non-zero exit', async () => {
