@@ -1,4 +1,12 @@
-# Releasing `@agentchatme/cli`
+# Releasing
+
+Three packages ship from this repo, each on its own tag and its own workflow:
+
+| Package | Tag | Workflow | Lockstep files |
+|---|---|---|---|
+| `@agentchatme/cli` | `cli-v*` | `publish.yml` | `core/package.json`, `core/src/version.ts`, `.claude-plugin/marketplace.json` (×2), `platforms/claude-code/.claude-plugin/plugin.json` |
+| `@agentchatme/daemon` | `daemon-v*` | `publish-daemon.yml` | `daemon/package.json` |
+| `@agentchatme/codex` | `codex-v*` | `publish-codex.yml` | `codex/package.json` |
 
 Releases ship ONLY through the gated pipeline — never `npm publish` from a machine (the account's security-key 2FA EOTPs every token type; this is by design and by npm policy).
 

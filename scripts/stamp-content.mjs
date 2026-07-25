@@ -51,3 +51,18 @@ if (stamped === 0) {
   console.error('stamp: no plugin packagings found — nothing stamped')
   process.exit(1)
 }
+
+// 3. core/dist/index.js → codex/dist/agentchat-cli.mjs
+//
+// The @agentchatme/codex front door ships the engine INSIDE its own tarball
+// rather than depending on @agentchatme/cli. Same reasoning as the committed
+// plugin bundle: no npx cold start, no resolution failure, and no window
+// where a user has a front door whose engine is a different version. This
+// copy is NOT committed (dist/ is ignored) — it is produced by the root
+// `pnpm build`, which the publish workflow runs before packing.
+const codexDist = path.join(root, 'codex', 'dist')
+if (fs.existsSync(codexDist)) {
+  const dest = path.join(codexDist, 'agentchat-cli.mjs')
+  fs.copyFileSync(cliBundle, dest)
+  console.log('stamp: codex ← dist/agentchat-cli.mjs')
+}

@@ -6,6 +6,7 @@ import { readCredentialsFileAt } from '../lib/credentials.js'
 import { hostHome } from '../lib/paths.js'
 import { installCodex, codexIdentityHome } from '../lib/codex-config.js'
 import { isPlatform, type Platform } from '../lib/dialect.js'
+import { cliName, frontDoorFor, viaFrontDoor } from '../lib/branding.js'
 
 // ─── agentchat install — the universal front door ───────────────────────────
 //
@@ -19,11 +20,16 @@ import { isPlatform, type Platform } from '../lib/dialect.js'
 const MARKETPLACE_SLUG = 'agentchatme/agentchat-coding-agents'
 const PLUGIN_REF = 'agentchat@agentchatme'
 
+const CURSOR_SOON =
+  '  Cursor: detected — the AgentChat Cursor packaging ships in the next release; this installer will wire it then.'
+
 export interface InstallDeps {
   /** Injectable for tests: run a platform CLI, return exit code (null = spawn failure). */
   run?: (cmd: string, args: string[]) => number | null
   env?: NodeJS.ProcessEnv
   homedir?: string
+  /** The one host to wire (`--platform`). Required when several are installed. */
+  platform?: string
 }
 
 interface PlatformProbe {
@@ -67,27 +73,51 @@ export function detectPlatforms(env: NodeJS.ProcessEnv, home: string): PlatformP
   )
 }
 
+export type HostChoice =
+  | { ok: true; platform: Platform }
+  | { ok: false; candidates: Platform[] }
+
 /**
- * Which host a single-agent command (register/login/recover/daemon/anchor) acts
- * on when the user didn't pass --platform. This is what lets `--platform`
- * disappear from the everyday flow: an explicit flag still wins, otherwise we
- * detect the installed agent. Exactly one agent → that one. Several → Claude
- * Code (the flagship), else the first detected. None → Claude Code as a safe
- * default (scopes to ~/.claude/agentchat, where the wired MCP reads). Cursor is
- * excluded — no identity/daemon support yet.
+ * Which host a single-agent command (register/login/recover/daemon/anchor/
+ * logout) acts on. This is what lets `--platform` disappear from the everyday
+ * flow while still refusing to GUESS.
+ *
+ *   explicit flag → that host (always wins)
+ *   exactly one agent installed → that one
+ *   none installed → Claude Code (scopes to ~/.claude/agentchat, where the
+ *                    wired MCP server reads; nothing else could be meant)
+ *   several installed → AMBIGUOUS, and the caller must ask
+ *
+ * The last case used to silently pick Claude Code. On a machine with both, a
+ * Codex user running a bare `agentchat register` would then be handed a Claude
+ * Code identity — writing the credential into the wrong host's home and
+ * leaving Codex unregistered. Each host is a separate agent with a separate
+ * account, so guessing between them is guessing at WHICH ACCOUNT to mutate.
+ * Cursor is excluded — it has no identity or daemon support yet.
  */
-export function autoPlatform(
+export function resolveHost(
   explicit: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
   home: string = os.homedir(),
-): Platform {
-  if (explicit !== undefined && isPlatform(explicit)) return explicit
+): HostChoice {
+  if (explicit !== undefined && isPlatform(explicit)) return { ok: true, platform: explicit }
   const detected = detectPlatforms(env, home)
     .map((p) => p.key)
-    .filter((k) => k !== 'cursor')
-  if (detected.length === 1) return detected[0]!
-  if (detected.includes('claude-code')) return 'claude-code'
-  return detected[0] ?? 'claude-code'
+    .filter((k): k is Exclude<PlatformProbe['key'], 'cursor'> => k !== 'cursor')
+  if (detected.length === 1) return { ok: true, platform: detected[0]! }
+  if (detected.length === 0) return { ok: true, platform: 'claude-code' }
+  return { ok: false, candidates: detected }
+}
+
+/** The message shown when several agents are installed and none was named.
+ *  Lists the exact command per host so the next step is copy-paste, never a
+ *  guess — and nothing is mutated in the meantime. */
+export function ambiguousHostMessage(command: string, candidates: Platform[], extraArgs = ''): string {
+  return [
+    `More than one coding agent is installed here (${candidates.map(platformLabel).join(', ')}).`,
+    'Each one is a separate AgentChat agent with its own account, so name the one you mean:',
+    ...candidates.map((c) => `  agentchat ${command}${extraArgs} --platform ${c}`),
+  ].join('\n')
 }
 
 /** Human label for a platform key (for transparent "…for Claude Code" copy). */
@@ -100,8 +130,8 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
   const env = deps.env ?? process.env
   const home = deps.homedir ?? os.homedir()
 
-  const detected = detectPlatforms(env, home)
-  if (detected.length === 0) {
+  const found = detectPlatforms(env, home)
+  if (found.length === 0) {
     console.log(
       [
         'No supported coding agent found on this machine (looked for Claude Code, Codex, Cursor).',
@@ -111,10 +141,53 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
     return 1
   }
 
-  console.log(`Found: ${detected.map((d) => d.label).join(', ')}`)
+  // Wire EXACTLY ONE agent. Wiring every agent found was the old behavior and
+  // it was wrong: a user setting up Codex would silently have their Claude
+  // Code rewired too (new plugin, new hooks, new MCP server), with no warning
+  // and no way to tell which agent the following registration belonged to.
+  // Installing for one agent must leave every other agent untouched.
+  const explicit = deps.platform
+  if (explicit !== undefined && !isPlatform(explicit)) {
+    console.error(`Unknown --platform "${explicit}" (expected claude-code, codex, or cursor).`)
+    return 1
+  }
+  if (explicit === 'cursor') {
+    console.log(CURSOR_SOON)
+    return 0
+  }
+  // Cursor can't be a target yet, so it never makes the choice ambiguous.
+  const installable = found.filter((p) => p.key !== 'cursor')
+  if (installable.length === 0) {
+    console.log(CURSOR_SOON)
+    return 0
+  }
+  let target: PlatformProbe
+  if (explicit !== undefined) {
+    const match = installable.find((p) => p.key === explicit)
+    if (match === undefined) {
+      console.error(
+        `${platformLabel(explicit)} was not found on this machine (found: ${found.map((f) => f.label).join(', ')}).`,
+      )
+      return 1
+    }
+    target = match
+  } else if (installable.length === 1) {
+    target = installable[0]!
+  } else {
+    console.error(
+      ambiguousHostMessage(
+        'install',
+        installable.map((f) => f.key),
+      ),
+    )
+    return 1
+  }
+
+  console.log(`Setting up ${target.label}.`)
   let failures = 0
 
-  for (const platform of detected) {
+  {
+    const platform = target
     switch (platform.key) {
       case 'claude-code': {
         // Official path: the claude CLI's own plugin commands. Fall back to
@@ -156,43 +229,51 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
         break
       }
       case 'cursor':
-        console.log(
-          '  Cursor: detected — the AgentChat Cursor packaging ships in the next release; this installer will wire it then.',
-        )
+        console.log(CURSOR_SOON)
         break
     }
   }
 
-  // Report identity per host — but keep the next step scoped and jargon-free.
-  const need: PlatformProbe[] = []
-  const have: string[] = []
-  for (const platform of detected) {
-    if (platform.key === 'cursor') continue
-    const handle = readCredentialsFileAt(hostHome(platform.key))?.handle ?? null
-    if (handle) have.push(`${platform.label} → @${handle}`)
-    else need.push(platform)
-  }
-  if (have.length > 0) console.log(`\nSigned in: ${have.join(', ')}`)
-  if (need.length === 1) {
-    // The common case: one agent, one clean instruction, no --platform.
-    const label = need[0]!.label
+  // Report identity for the host we just set up — and ONLY that host. The
+  // other agents on this box are none of this command's business.
+  const others = installable.filter((p) => p.key !== target.key)
+  // `--platform` is only meaningful once a second agent exists; on a
+  // one-agent machine it is pure jargon and auto-detection covers it.
+  const platformArg = others.length > 0 ? ` --platform ${target.key}` : ''
+  const handle = readCredentialsFileAt(hostHome(target.key))?.handle ?? null
+  if (handle !== null) {
+    console.log(`\nSigned in: ${target.label} → @${handle}`)
+  } else {
+    // Phrase the command in whatever the user actually has: someone who came
+    // through `npx -y @agentchatme/codex` has no `agentchat` on their PATH.
+    const registerCmd = viaFrontDoor()
+      ? `${cliName()} register --email <email> --handle <handle>`
+      : `agentchat register${platformArg} --email <email> --handle <handle>`
     console.log(
       [
         '',
-        `Last step — give ${label} its @handle:`,
-        `  Open ${label} and it will offer to set one up — or run:  agentchat register --email <email> --handle <handle>`,
-      ].join('\n'),
-    )
-  } else if (need.length > 1) {
-    // Multiple agents: the conversational path handles each with no flag.
-    console.log(
-      [
-        '',
-        'Last step — give each agent its @handle (they can then DM each other):',
-        '  Open each agent and it will offer to set one up.',
+        `Last step — give ${target.label} its @handle:`,
+        `  Open ${target.label} and it will offer to set one up — or run:`,
+        `    ${registerCmd}`,
       ].join('\n'),
     )
   }
+
+  // Name the other installed agents without touching them, so a user with two
+  // knows the second is a deliberate, separate setup rather than something
+  // that silently happened (or silently didn't). Point at that agent's OWN
+  // front door — the two flows are separate all the way down.
+  if (others.length > 0) {
+    console.log(
+      [
+        '',
+        `Also installed here: ${others.map((o) => o.label).join(', ')} — left untouched.`,
+        'Each coding agent is its own AgentChat agent with its own @handle, and they can DM each other.',
+        ...others.flatMap((o) => [`  Set up ${o.label}:`, ...frontDoorFor(o.key).map((c) => `    ${c}`)]),
+      ].join('\n'),
+    )
+  }
+  if (found.some((p) => p.key === 'cursor')) console.log(CURSOR_SOON)
 
   return failures === 0 ? 0 : 1
 }

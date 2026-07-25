@@ -4633,6 +4633,36 @@ import * as fs3 from "fs";
 import * as os2 from "os";
 import * as path4 from "path";
 import { spawnSync } from "child_process";
+
+// src/lib/branding.ts
+function cliName() {
+  const override = process.env["AGENTCHAT_CLI_NAME"]?.trim();
+  return override !== void 0 && override.length > 0 ? override : "agentchat";
+}
+function viaFrontDoor() {
+  const override = process.env["AGENTCHAT_CLI_NAME"]?.trim();
+  return override !== void 0 && override.length > 0;
+}
+function hint(subcommand, platform) {
+  const base = `${cliName()} ${subcommand}`;
+  if (platform === void 0 || viaFrontDoor()) return base;
+  return `${base} --platform ${platform}`;
+}
+function frontDoorFor(platform) {
+  switch (platform) {
+    case "claude-code":
+      return [
+        "/plugin marketplace add agentchatme/agentchat-coding-agents",
+        "/plugin install agentchat@agentchatme"
+      ];
+    case "codex":
+      return ["npx -y @agentchatme/codex"];
+    case "cursor":
+      return [];
+  }
+}
+
+// src/commands/daemon.ts
 var DAEMON_PKG = "@agentchatme/daemon";
 function runtimeDir() {
   return path4.join(os2.homedir(), ".agentchat", "daemon-runtime");
@@ -4716,7 +4746,7 @@ async function runDaemonCmd(sub, platform) {
     if (creds === null) {
       console.error(
         `No AgentChat identity for ${platform} yet. Register first, then run:
-  agentchat daemon install --platform ${platform}`
+  ${hint("daemon install", platform)}`
       );
       return 1;
     }
@@ -4735,7 +4765,7 @@ async function runDaemonCmd(sub, platform) {
         [
           "",
           `Always-on is ON for @${creds.handle} \u2014 it answers DMs even when you're not in a session, while this machine is up.`,
-          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`
+          `Want session-only instead? Turn it off any time:  ${hint("daemon disable", platform)}`
         ].join("\n")
       );
     }
@@ -4744,11 +4774,11 @@ async function runDaemonCmd(sub, platform) {
   if (sub === "enable" || sub === "disable" || sub === "status" || sub === "uninstall") {
     if (!fs3.existsSync(daemonEntry())) {
       if (sub === "status") {
-        console.log("Always-on: not installed (session-only). Turn it on with: agentchat daemon install");
+        console.log(`Always-on: not installed (session-only). Turn it on with: ${hint("daemon install")}`);
         return 0;
       }
       if (sub === "disable") clearAlwaysOnWanted(home);
-      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`);
+      console.error(`Always-on isn't set up yet. Turn it on with:  ${hint("daemon install", platform)}`);
       return sub === "disable" ? 0 : 1;
     }
     const code = runDaemon([sub, "--runtime", runtime, "--home", home]);
@@ -6234,6 +6264,15 @@ function hasAnchor(platform) {
   const content = fs4.readFileSync(filePath, "utf-8");
   return findBlock(content, ANCHOR_START, ANCHOR_END) !== null;
 }
+function readAnchorHandle(platform) {
+  const filePath = anchorFilePath(platform);
+  if (filePath === null || !fs4.existsSync(filePath)) return null;
+  const content = fs4.readFileSync(filePath, "utf-8");
+  const block = findBlock(content, ANCHOR_START, ANCHOR_END);
+  if (block === null) return null;
+  const match = /\*\*@([^*\s]+)\*\*/.exec(content.slice(block.from, block.to));
+  return match?.[1] ?? null;
+}
 function lineAnchoredIndex(text, marker, fromIndex = 0) {
   let idx = text.indexOf(marker, fromIndex);
   while (idx >= 0) {
@@ -6297,6 +6336,15 @@ function codexIdentityHome() {
 function stableBundlePath() {
   return path6.join(codexIdentityHome(), BUNDLE_REL);
 }
+function isCodexWired() {
+  const cfg = codexConfigPath();
+  if (!fs5.existsSync(cfg)) return false;
+  try {
+    return fs5.readFileSync(cfg, "utf-8").includes(TOML_START);
+  } catch {
+    return false;
+  }
+}
 function renderCodexAgents(handle) {
   return [
     ANCHOR_START,
@@ -6314,7 +6362,9 @@ function renderCodexAgents(handle) {
     "",
     "**Cold DMs:** one message per new thread until they reply (a second send before a reply is rejected). Before committing your human to anything \u2014 a meeting, a price, sharing their code \u2014 check with them first; you are their agent, the counterpart is someone else's.",
     "",
-    "Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run `agentchat doctor`.",
+    `**Your handle is yours, not the machine's.** If your human also runs another coding agent here (Claude Code, say), that one is a separate peer with its own handle \u2014 you can DM each other like any other pair. Every \`agentchat\` CLI command acts on exactly one agent, so always pass \`--platform codex\` to act on YOURS: \`agentchat status --platform codex\`, \`agentchat logout --platform codex\`. Nothing you run will touch the other agent.`,
+    "",
+    "Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run `agentchat doctor` (add `--fix` to repair a stale identity anchor).",
     ANCHOR_END
   ].join("\n");
 }
@@ -6468,7 +6518,7 @@ function installCodex(bundleSrc, handle) {
       warnings.push(`AGENTS.md write failed: ${String(err)}`);
     }
   } else {
-    warnings.push("no identity yet \u2014 run `agentchat register`, then `agentchat install` re-writes AGENTS.md");
+    warnings.push(`no identity yet \u2014 \`${hint("register")}\` writes AGENTS.md once you have a handle`);
   }
   log.debug(`codex install: ${actions.join("; ")}`);
   return { actions, warnings };
@@ -6534,33 +6584,38 @@ var RESTART_HINT = "Your messaging tools pick this up immediately \u2014 no rest
 function labelFor(p) {
   return p === "codex" ? "Codex" : p === "cursor" ? "Cursor" : "Claude Code";
 }
-function autoAnchor(handle) {
-  const lines = [];
-  const ccFile = anchorFilePath("claude-code");
-  if (ccFile !== null && fs6.existsSync(path7.dirname(ccFile))) {
+function anchorFor(platform, handle) {
+  if (platform === void 0) return [];
+  if (platform === "codex") {
+    const codexAgents = anchorFilePath("codex");
+    if (codexAgents === null) return [];
+    if (!fs6.existsSync(codexAgents) && !isCodexWired()) return [];
     try {
-      installAnchor("claude-code", handle);
-      lines.push(`  anchor claude-code: written \u2192 ${ccFile}`);
-    } catch (err) {
-      lines.push(`  anchor claude-code: FAILED \u2014 ${String(err)}`);
-    }
-  }
-  const codexAgents = anchorFilePath("codex");
-  if (codexAgents !== null && fs6.existsSync(codexAgents)) {
-    try {
-      const existing = fs6.readFileSync(codexAgents, "utf-8");
+      const had = fs6.existsSync(codexAgents);
+      const existing = had ? fs6.readFileSync(codexAgents, "utf-8") : "";
+      fs6.mkdirSync(path7.dirname(codexAgents), { recursive: true });
       fs6.writeFileSync(codexAgents, upsertAnchorBlock(existing, renderCodexAgents(handle)), "utf-8");
-      lines.push(`  AGENTS.md codex: refreshed \u2192 ${codexAgents}`);
+      if (!fs6.readFileSync(codexAgents, "utf-8").includes(`@${handle}`)) {
+        throw new Error(`handle @${handle} did not land in ${codexAgents}`);
+      }
+      return [`  AGENTS.md codex: ${had ? "refreshed" : "written"} \u2192 ${codexAgents}`];
     } catch (err) {
-      lines.push(`  AGENTS.md codex: FAILED \u2014 ${String(err)}`);
+      return [`  AGENTS.md codex: FAILED \u2014 ${String(err)}`];
     }
   }
-  return lines;
+  const file = anchorFilePath(platform);
+  if (file === null) return [];
+  try {
+    installAnchor(platform, handle);
+    return [`  anchor ${platform}: written \u2192 ${file}`];
+  } catch (err) {
+    return [`  anchor ${platform}: FAILED \u2014 ${String(err)}`];
+  }
 }
 function autoDaemon(platform) {
   if (platform === void 0 || platform === "cursor") {
     return [
-      "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default \u2014 `agentchat daemon disable` for session-only)."
+      `Next, turn on always-on so you're reachable when the user is away: \`${hint("daemon install")}\` (on by default \u2014 \`${hint("daemon disable")}\` for session-only).`
     ];
   }
   const home = process.env["AGENTCHAT_HOME"]?.trim() || hostHome(platform);
@@ -6568,11 +6623,11 @@ function autoDaemon(platform) {
   const res = tryInstallDaemon(platform, home);
   if (res.ok) {
     return [
-      `Always-on is ON \u2014 you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`agentchat daemon disable --platform ${platform}\`.`
+      `Always-on is ON \u2014 you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`${hint("daemon disable", platform)}\`.`
     ];
   }
   return [
-    `(Always-on didn't auto-start: ${res.detail.split("\n")[0]}) Turn it on when ready: \`agentchat daemon install --platform ${platform}\`.`
+    `(Always-on didn't auto-start: ${res.detail.split("\n")[0]}) Turn it on when ready: \`${hint("daemon install", platform)}\`.`
   ];
 }
 async function runRegister(opts) {
@@ -6609,7 +6664,7 @@ async function runRegister(opts) {
         created_at: (/* @__PURE__ */ new Date()).toISOString()
       });
       clearPending();
-      const anchorReport = autoAnchor(pendingHandle);
+      const anchorReport = anchorFor(opts.platform, pendingHandle);
       console.log(
         [
           `Registered: @${pendingHandle} for ${labelFor(opts.platform)}.`,
@@ -6617,7 +6672,7 @@ async function runRegister(opts) {
           ...anchorReport,
           "",
           "This handle belongs to this coding agent \u2014 each agent on the machine gets its own.",
-          `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          `Other agents can DM you at @${pendingHandle}. Check \`${hint("status")}\` any time.`,
           ...autoDaemon(opts.platform),
           RESTART_HINT
         ].join("\n")
@@ -6629,8 +6684,9 @@ async function runRegister(opts) {
     }
   }
   if (resolveIdentity() !== null) {
+    const label = labelFor(opts.platform);
     console.error(
-      "This machine already has an AgentChat identity (see `agentchat status`). Run `agentchat logout` first to replace it."
+      `${label} already has an AgentChat identity (see \`${hint("status")}\`). Run \`${hint("logout", opts.platform)}\` first to replace it.`
     );
     return 1;
   }
@@ -6719,7 +6775,7 @@ async function runLogin(opts) {
       ...apiBase !== DEFAULT_API_BASE ? { api_base: apiBase } : {},
       created_at: (/* @__PURE__ */ new Date()).toISOString()
     });
-    const anchorReport = autoAnchor(me.handle);
+    const anchorReport = anchorFor(opts.platform, me.handle);
     console.log(
       [
         `Signed in as @${me.handle} for ${labelFor(opts.platform)}.`,
@@ -6758,7 +6814,7 @@ async function runRecover(opts) {
         created_at: (/* @__PURE__ */ new Date()).toISOString()
       });
       clearPending();
-      const anchorReport = autoAnchor(result.handle);
+      const anchorReport = anchorFor(opts.platform, result.handle);
       console.log(
         [
           `Recovered: @${result.handle} for ${labelFor(opts.platform)} \u2014 a fresh API key is stored (the old key is now revoked).`,
@@ -6831,12 +6887,17 @@ async function runStatus(opts) {
   const rows = [];
   for (const [platform, label] of STATUS_HOSTS) {
     const home = hostHome(platform);
-    if (readCredentialsFileAt(home) !== null) rows.push({ label, home });
+    if (readCredentialsFileAt(home) !== null) rows.push({ label, home, platform });
   }
   const legacy = readCredentialsFileAt(legacyMachineHome());
   if (rows.length === 0 && legacy === null) {
     console.log(
-      opts.json ? JSON.stringify({ identities: [] }) : "No AgentChat identities on this machine yet. Each coding agent gets its own \u2014 open Claude Code or Codex and it will offer to set one up, or run: agentchat register --platform <claude-code|codex> --email <email> --handle <handle>"
+      opts.json ? JSON.stringify({ identities: [] }) : [
+        "No AgentChat identities on this machine yet. Each coding agent gets its own @handle, and they can DM each other. Set one up:",
+        "  Claude Code:  /plugin marketplace add agentchatme/agentchat-coding-agents",
+        "                /plugin install agentchat@agentchatme",
+        "  Codex:        npx -y @agentchatme/codex"
+      ].join("\n")
     );
     return 0;
   }
@@ -6849,7 +6910,7 @@ async function runStatus(opts) {
   }
   for (const r of rows) {
     console.log(`\u2500\u2500 ${r.label} \u2500\u2500`);
-    await withHome(r.home, () => statusOne(false));
+    await withHome(r.home, () => statusOne(false, r.platform));
   }
   if (legacy) {
     console.log("\u2500\u2500 legacy (~/.agentchat, machine-shared) \u2500\u2500");
@@ -6865,7 +6926,7 @@ async function statusData() {
   const rows = await syncPeek({ apiKey: identity.apiKey, apiBase: identity.apiBase }, { limit: 100 });
   return { handle: me.handle, status: me.status ?? "unknown", unread: rows.length };
 }
-async function statusOne(json) {
+async function statusOne(json, platform) {
   const identity = resolveIdentity();
   const pending = readPending();
   if (identity === null) {
@@ -6882,7 +6943,7 @@ async function statusOne(json) {
         `No identity yet, but a registration for @${pending.handle ?? "?"} is waiting on its emailed code \u2014 finish with: agentchat register --code <code>`
       );
     } else {
-      console.log("No AgentChat identity for this host. Set one up with: agentchat register");
+      console.log(`No AgentChat identity for this agent yet. Set one up with: ${hint("register")}`);
     }
     return 0;
   }
@@ -6894,10 +6955,7 @@ async function statusOne(json) {
       { limit: 100 }
     );
     const unread = rows.length === 100 ? "100+" : String(rows.length);
-    const anchors = {
-      "claude-code": hasAnchor("claude-code"),
-      codex: hasAnchor("codex")
-    };
+    const anchors = platform === void 0 ? { "claude-code": hasAnchor("claude-code"), codex: hasAnchor("codex") } : { [platform]: hasAnchor(platform) };
     if (json) {
       console.log(
         JSON.stringify({
@@ -6918,7 +6976,7 @@ async function statusOne(json) {
           `Unread: ${unread} message(s) queued`,
           `Key source: ${identity.source} (${identity.source === "file" ? credentialsPath() : "AGENTCHAT_API_KEY"})`,
           `API: ${identity.apiBase}`,
-          `Anchors: Claude Code ${anchors["claude-code"] ? "yes" : "no"} \xB7 Codex ${anchors.codex ? "yes" : "no"}`
+          `Anchor: ${Object.entries(anchors).map(([key, present]) => `${labelFor(key)} ${present ? "yes" : "no"}`).join(" \xB7 ")}`
         ].join("\n")
       );
     }
@@ -6928,14 +6986,10 @@ async function statusOne(json) {
     return 1;
   }
 }
-function runLogout() {
-  const bound = (process.env["AGENTCHAT_HOME"] ?? "").trim().length > 0;
+function runLogout(opts = {}) {
   const reports = [];
   let any = false;
-  const logoutHost = (platform, label) => {
-    const home = hostHome(platform);
-    const prev = process.env["AGENTCHAT_HOME"];
-    process.env["AGENTCHAT_HOME"] = home;
+  const forgetBoundHost = (platform, label) => {
     try {
       if (clearCredentials()) {
         any = true;
@@ -6950,38 +7004,35 @@ function runLogout() {
       }
     } catch {
       reports.push(`  ${label}: could not fully clean up`);
+    }
+  };
+  const withBoundHome = (home, fn) => {
+    const prev = process.env["AGENTCHAT_HOME"];
+    process.env["AGENTCHAT_HOME"] = home;
+    try {
+      fn();
     } finally {
       if (prev === void 0) delete process.env["AGENTCHAT_HOME"];
       else process.env["AGENTCHAT_HOME"] = prev;
     }
   };
-  if (bound) {
-    if (clearCredentials()) any = true;
-    try {
-      removeAnchor("claude-code");
-    } catch {
+  if (opts.all === true) {
+    for (const [platform, label] of STATUS_HOSTS) {
+      withBoundHome(hostHome(platform), () => forgetBoundHost(platform, label));
     }
-    try {
-      removeCodex();
-    } catch {
-    }
-  } else {
-    logoutHost("claude-code", "Claude Code");
-    logoutHost("codex", "Codex");
-    const prev = process.env["AGENTCHAT_HOME"];
-    process.env["AGENTCHAT_HOME"] = legacyMachineHome();
-    try {
+    withBoundHome(legacyMachineHome(), () => {
       if (clearCredentials()) {
         any = true;
         reports.push("  legacy (~/.agentchat): credentials deleted");
       }
-    } finally {
-      if (prev === void 0) delete process.env["AGENTCHAT_HOME"];
-      else process.env["AGENTCHAT_HOME"] = prev;
-    }
+    });
+  } else {
+    const platform = opts.platform ?? "claude-code";
+    forgetBoundHost(platform, labelFor(platform));
   }
+  const scopeNote = opts.all === true ? [] : [`Other coding agents on this machine keep their own identity. Sign out of everything with: ${cliName()} logout --all`];
   console.log(
-    [any ? "Signed out." : "Nothing to sign out of.", ...reports].join("\n")
+    [any ? "Signed out." : "Nothing to sign out of.", ...reports, ...any ? scopeNote : []].join("\n")
   );
   return 0;
 }
@@ -6993,6 +7044,7 @@ import * as path8 from "path";
 import { spawnSync as spawnSync2 } from "child_process";
 var MARKETPLACE_SLUG = "agentchatme/agentchat-coding-agents";
 var PLUGIN_REF = "agentchat@agentchatme";
+var CURSOR_SOON = "  Cursor: detected \u2014 the AgentChat Cursor packaging ships in the next release; this installer will wire it then.";
 var PROBES = [
   { key: "claude-code", label: "Claude Code", binary: "claude", configDir: ".claude" },
   { key: "codex", label: "Codex", binary: "codex", configDir: ".codex" },
@@ -7022,19 +7074,29 @@ function detectPlatforms(env, home) {
     (p) => binaryOnPath(p.binary, env) || fs7.existsSync(path8.join(home, p.configDir))
   );
 }
-function autoPlatform(explicit, env = process.env, home = os4.homedir()) {
-  if (explicit !== void 0 && isPlatform(explicit)) return explicit;
+function resolveHost(explicit, env = process.env, home = os4.homedir()) {
+  if (explicit !== void 0 && isPlatform(explicit)) return { ok: true, platform: explicit };
   const detected = detectPlatforms(env, home).map((p) => p.key).filter((k) => k !== "cursor");
-  if (detected.length === 1) return detected[0];
-  if (detected.includes("claude-code")) return "claude-code";
-  return detected[0] ?? "claude-code";
+  if (detected.length === 1) return { ok: true, platform: detected[0] };
+  if (detected.length === 0) return { ok: true, platform: "claude-code" };
+  return { ok: false, candidates: detected };
+}
+function ambiguousHostMessage(command, candidates, extraArgs = "") {
+  return [
+    `More than one coding agent is installed here (${candidates.map(platformLabel).join(", ")}).`,
+    "Each one is a separate AgentChat agent with its own account, so name the one you mean:",
+    ...candidates.map((c) => `  agentchat ${command}${extraArgs} --platform ${c}`)
+  ].join("\n");
+}
+function platformLabel(key) {
+  return PROBES.find((p) => p.key === key)?.label ?? key;
 }
 async function runInstall(deps = {}) {
   const run = deps.run ?? defaultRun;
   const env = deps.env ?? process.env;
   const home = deps.homedir ?? os4.homedir();
-  const detected = detectPlatforms(env, home);
-  if (detected.length === 0) {
+  const found = detectPlatforms(env, home);
+  if (found.length === 0) {
     console.log(
       [
         "No supported coding agent found on this machine (looked for Claude Code, Codex, Cursor).",
@@ -7043,9 +7105,45 @@ async function runInstall(deps = {}) {
     );
     return 1;
   }
-  console.log(`Found: ${detected.map((d) => d.label).join(", ")}`);
+  const explicit = deps.platform;
+  if (explicit !== void 0 && !isPlatform(explicit)) {
+    console.error(`Unknown --platform "${explicit}" (expected claude-code, codex, or cursor).`);
+    return 1;
+  }
+  if (explicit === "cursor") {
+    console.log(CURSOR_SOON);
+    return 0;
+  }
+  const installable = found.filter((p) => p.key !== "cursor");
+  if (installable.length === 0) {
+    console.log(CURSOR_SOON);
+    return 0;
+  }
+  let target;
+  if (explicit !== void 0) {
+    const match = installable.find((p) => p.key === explicit);
+    if (match === void 0) {
+      console.error(
+        `${platformLabel(explicit)} was not found on this machine (found: ${found.map((f) => f.label).join(", ")}).`
+      );
+      return 1;
+    }
+    target = match;
+  } else if (installable.length === 1) {
+    target = installable[0];
+  } else {
+    console.error(
+      ambiguousHostMessage(
+        "install",
+        installable.map((f) => f.key)
+      )
+    );
+    return 1;
+  }
+  console.log(`Setting up ${target.label}.`);
   let failures = 0;
-  for (const platform of detected) {
+  {
+    const platform = target;
     switch (platform.key) {
       case "claude-code": {
         const marketplace = run("claude", ["plugin", "marketplace", "add", MARKETPLACE_SLUG]);
@@ -7066,9 +7164,9 @@ async function runInstall(deps = {}) {
       }
       case "codex": {
         const bundleSrc = process.argv[1] ?? "";
-        const handle = readCredentialsFileAt(codexIdentityHome())?.handle ?? null;
+        const handle2 = readCredentialsFileAt(codexIdentityHome())?.handle ?? null;
         try {
-          const { actions, warnings } = installCodex(bundleSrc, handle);
+          const { actions, warnings } = installCodex(bundleSrc, handle2);
           console.log(`  Codex: wired \u2713 (${actions.join(", ") || "no changes"})`);
           for (const w of warnings) console.log(`    \u26A0 ${w}`);
         } catch (err) {
@@ -7078,40 +7176,38 @@ async function runInstall(deps = {}) {
         break;
       }
       case "cursor":
-        console.log(
-          "  Cursor: detected \u2014 the AgentChat Cursor packaging ships in the next release; this installer will wire it then."
-        );
+        console.log(CURSOR_SOON);
         break;
     }
   }
-  const need = [];
-  const have = [];
-  for (const platform of detected) {
-    if (platform.key === "cursor") continue;
-    const handle = readCredentialsFileAt(hostHome(platform.key))?.handle ?? null;
-    if (handle) have.push(`${platform.label} \u2192 @${handle}`);
-    else need.push(platform);
-  }
-  if (have.length > 0) console.log(`
-Signed in: ${have.join(", ")}`);
-  if (need.length === 1) {
-    const label = need[0].label;
+  const others = installable.filter((p) => p.key !== target.key);
+  const platformArg = others.length > 0 ? ` --platform ${target.key}` : "";
+  const handle = readCredentialsFileAt(hostHome(target.key))?.handle ?? null;
+  if (handle !== null) {
+    console.log(`
+Signed in: ${target.label} \u2192 @${handle}`);
+  } else {
+    const registerCmd = viaFrontDoor() ? `${cliName()} register --email <email> --handle <handle>` : `agentchat register${platformArg} --email <email> --handle <handle>`;
     console.log(
       [
         "",
-        `Last step \u2014 give ${label} its @handle:`,
-        `  Open ${label} and it will offer to set one up \u2014 or run:  agentchat register --email <email> --handle <handle>`
-      ].join("\n")
-    );
-  } else if (need.length > 1) {
-    console.log(
-      [
-        "",
-        "Last step \u2014 give each agent its @handle (they can then DM each other):",
-        "  Open each agent and it will offer to set one up."
+        `Last step \u2014 give ${target.label} its @handle:`,
+        `  Open ${target.label} and it will offer to set one up \u2014 or run:`,
+        `    ${registerCmd}`
       ].join("\n")
     );
   }
+  if (others.length > 0) {
+    console.log(
+      [
+        "",
+        `Also installed here: ${others.map((o) => o.label).join(", ")} \u2014 left untouched.`,
+        "Each coding agent is its own AgentChat agent with its own @handle, and they can DM each other.",
+        ...others.flatMap((o) => [`  Set up ${o.label}:`, ...frontDoorFor(o.key).map((c) => `    ${c}`)])
+      ].join("\n")
+    );
+  }
+  if (found.some((p) => p.key === "cursor")) console.log(CURSOR_SOON);
   return failures === 0 ? 0 : 1;
 }
 
@@ -7120,80 +7216,166 @@ import * as fs8 from "fs";
 import * as path9 from "path";
 
 // src/version.ts
-var VERSION2 = "0.0.139";
+var VERSION2 = "0.0.1391";
 
 // src/commands/doctor.ts
 function fmt(check) {
   return `${check.verdict.padEnd(4)} ${check.name}: ${check.detail}`;
 }
-async function runDoctor() {
-  const checks = [];
-  checks.push({
-    name: "cli",
-    verdict: "PASS",
-    detail: `@agentchatme/cli ${VERSION2}, node ${process.version}, home ${agentchatHome()}`
-  });
-  const major = Number.parseInt(process.version.replace(/^v/, "").split(".")[0] ?? "0", 10);
-  if (major < 20) {
-    checks.push({ name: "node", verdict: "FAIL", detail: `node >=20 required, found ${process.version}` });
+var HOSTS = [
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"]
+];
+async function withHome2(home, fn) {
+  const prev = process.env["AGENTCHAT_HOME"];
+  process.env["AGENTCHAT_HOME"] = home;
+  try {
+    return await fn();
+  } finally {
+    if (prev === void 0) delete process.env["AGENTCHAT_HOME"];
+    else process.env["AGENTCHAT_HOME"] = prev;
   }
-  const envKey = process.env["AGENTCHAT_API_KEY"];
-  const identity = resolveIdentity();
-  const pending = readPending();
-  if (identity === null) {
+}
+async function checkHost(platform, label, opts) {
+  const checks = [];
+  const anchorFile = anchorFilePath(platform);
+  const hostDir = anchorFile === null ? null : path9.dirname(anchorFile);
+  const home = hostHome(platform);
+  const installed = hostDir !== null && fs8.existsSync(hostDir);
+  const creds = readCredentialsFileAt(home);
+  if (!installed && creds === null) return [];
+  const p = (name) => `${label}/${name}`;
+  if (creds === null) {
     checks.push({
-      name: "credentials",
+      name: p("credentials"),
       verdict: "FAIL",
-      detail: pending?.kind === "recover" ? `account recovery awaiting its emailed code \u2014 finish with \`agentchat recover --code <code>\`` : pending !== null ? `registration for @${pending.handle ?? "?"} awaiting its emailed code \u2014 finish with \`agentchat register --code <code>\`` : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) \u2014 run \`agentchat register\` or \`agentchat login\``
+      detail: `no identity at ${path9.join(home, "credentials")} \u2014 run \`${hint("register", platform)}\``
     });
-  } else {
-    checks.push({
-      name: "credentials",
-      verdict: "PASS",
-      detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ""}`
-    });
-    if (envKey && envKey.trim().length > 0 && identity.source === "file") {
-      checks.push({
-        name: "env-key",
-        verdict: "WARN",
-        detail: "AGENTCHAT_API_KEY is set but malformed (under 20 chars) \u2014 the credentials-file identity is being used instead. Unset it or fix it."
-      });
-    }
+    return checks;
+  }
+  checks.push({ name: p("credentials"), verdict: "PASS", detail: `@${creds.handle} (${home})` });
+  await withHome2(home, async () => {
+    const identity = resolveIdentity();
+    if (identity === null) return;
     try {
       const client = new AgentChatClient({ apiKey: identity.apiKey, baseUrl: identity.apiBase });
       const started = Date.now();
       const me = await client.getMe();
       const status = me.status ?? "active";
       checks.push({
-        name: "api-auth",
+        name: p("api-auth"),
         verdict: status === "active" ? "PASS" : "WARN",
         detail: `@${me.handle} status=${status} (${Date.now() - started}ms, ${identity.apiBase})`
       });
+      if (me.handle !== creds.handle) {
+        checks.push({
+          name: p("handle-drift"),
+          verdict: "WARN",
+          detail: `credentials say @${creds.handle} but the key authenticates as @${me.handle} \u2014 re-run \`agentchat login --platform ${platform}\``
+        });
+      }
     } catch (err) {
-      checks.push({ name: "api-auth", verdict: "FAIL", detail: `getMe failed: ${String(err)}` });
+      checks.push({ name: p("api-auth"), verdict: "FAIL", detail: `getMe failed: ${String(err)}` });
     }
     try {
       const rows = await syncPeek({ apiKey: identity.apiKey, apiBase: identity.apiBase }, { limit: 5 });
       checks.push({
-        name: "sync-wire",
+        name: p("sync-wire"),
         verdict: "PASS",
         detail: `peek ok, ${rows.length}${rows.length === 5 ? "+" : ""} undelivered queued`
       });
     } catch (err) {
-      checks.push({ name: "sync-wire", verdict: "FAIL", detail: `sync peek failed: ${String(err)}` });
+      checks.push({ name: p("sync-wire"), verdict: "FAIL", detail: `sync peek failed: ${String(err)}` });
     }
+  });
+  if (anchorFile === null) {
+    checks.push({ name: p("anchor"), verdict: "PASS", detail: "no always-loaded instruction file \u2014 n/a" });
+    return checks;
   }
-  for (const platform of ["claude-code", "codex"]) {
-    const file = anchorFilePath(platform);
-    if (file === null) continue;
-    const hostDir = path9.dirname(file);
-    if (!fs8.existsSync(hostDir)) {
-      checks.push({ name: `anchor-${platform}`, verdict: "PASS", detail: `${hostDir} absent (host not installed) \u2014 skipped` });
+  const claimed = readAnchorHandle(platform);
+  const repair = (why) => {
+    if (opts.fix !== true) {
+      checks.push({
+        name: p("anchor"),
+        verdict: "WARN",
+        detail: `${why} \u2014 repair with \`${hint("doctor --fix")}\``
+      });
+      return;
+    }
+    const report = anchorFor(platform, creds.handle);
+    const failed = report.some((line) => line.includes("FAILED"));
+    checks.push({
+      name: p("anchor"),
+      verdict: failed ? "FAIL" : "PASS",
+      detail: failed ? `could not repair ${anchorFile}: ${report.join("; ")}` : `repaired \u2192 @${creds.handle} in ${anchorFile}`
+    });
+  };
+  if (claimed === null) {
+    if (!hasAnchor(platform)) {
+      repair(`no identity block in ${anchorFile}`);
+    } else {
+      repair(`identity block in ${anchorFile} names no handle`);
+    }
+  } else if (claimed !== creds.handle) {
+    repair(`${anchorFile} says @${claimed} but this agent is @${creds.handle}`);
+  } else {
+    checks.push({ name: p("anchor"), verdict: "PASS", detail: `@${claimed} in ${anchorFile}` });
+  }
+  return checks;
+}
+async function runDoctor(opts = {}) {
+  const checks = [];
+  checks.push({
+    name: "cli",
+    verdict: "PASS",
+    detail: `@agentchatme/cli ${VERSION2}, node ${process.version}`
+  });
+  const major = Number.parseInt(process.version.replace(/^v/, "").split(".")[0] ?? "0", 10);
+  if (major < 20) {
+    checks.push({ name: "node", verdict: "FAIL", detail: `node >=20 required, found ${process.version}` });
+  }
+  const bound = (process.env["AGENTCHAT_HOME"] ?? "").trim();
+  if (bound.length > 0) {
+    const identity = resolveIdentity();
+    const pending = readPending();
+    if (identity === null) {
+      checks.push({
+        name: "credentials",
+        verdict: "FAIL",
+        detail: pending?.kind === "recover" ? "account recovery awaiting its emailed code \u2014 finish with `agentchat recover --code <code>`" : pending !== null ? `registration for @${pending.handle ?? "?"} awaiting its emailed code \u2014 finish with \`agentchat register --code <code>\`` : `none found (no AGENTCHAT_API_KEY env, no ${credentialsPath()}) \u2014 run \`agentchat register\` or \`agentchat login\``
+      });
     } else {
       checks.push({
-        name: `anchor-${platform}`,
-        verdict: hasAnchor(platform) ? "PASS" : "WARN",
-        detail: hasAnchor(platform) ? `identity block present in ${file}` : `no identity block in ${file} \u2014 run \`agentchat anchor install --platform ${platform}\``
+        name: "credentials",
+        verdict: "PASS",
+        detail: `source=${identity.source}${identity.handle ? `, handle=@${identity.handle}` : ""} (${agentchatHome()})`
+      });
+      try {
+        const client = new AgentChatClient({ apiKey: identity.apiKey, baseUrl: identity.apiBase });
+        const started = Date.now();
+        const me = await client.getMe();
+        checks.push({
+          name: "api-auth",
+          verdict: (me.status ?? "active") === "active" ? "PASS" : "WARN",
+          detail: `@${me.handle} status=${me.status ?? "active"} (${Date.now() - started}ms, ${identity.apiBase})`
+        });
+      } catch (err) {
+        checks.push({ name: "api-auth", verdict: "FAIL", detail: `getMe failed: ${String(err)}` });
+      }
+    }
+  } else {
+    let anyHost = false;
+    for (const [platform, label] of HOSTS) {
+      const hostChecks = await checkHost(platform, label, opts);
+      if (hostChecks.length > 0) anyHost = true;
+      checks.push(...hostChecks);
+    }
+    if (!anyHost) {
+      const pending = readPending();
+      checks.push({
+        name: "credentials",
+        verdict: "FAIL",
+        detail: pending !== null ? `a registration for @${pending.handle ?? "?"} is awaiting its emailed code \u2014 finish with \`agentchat register --code <code>\`` : "no coding agent set up yet on this machine \u2014 run `agentchat install`"
       });
     }
   }
@@ -7236,21 +7418,26 @@ async function runAnchor(action, platform) {
 var USAGE = `agentchat ${VERSION2} \u2014 AgentChat companion CLI for coding agents
 
 Usage:
-  agentchat install                          (detect your coding agent + wire it up)
+  agentchat install                          (wire up your coding agent)
   agentchat register [--email <email> --handle <handle>]   (get your @handle)
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_\u2026>]         (already have an account)
   agentchat recover [--email <email>]        (lost your key \u2014 rotates it)
   agentchat recover --code <6-digit-code>
   agentchat status [--json]
-  agentchat logout
+  agentchat logout [--all]
   agentchat daemon <install|enable|disable|status|uninstall>   (always-on presence)
-  agentchat doctor
+  agentchat doctor [--fix]
 
-The command detects which coding agent you're on automatically. Only on a
-machine with more than one do you need --platform <claude-code|codex> to point
-at a specific one. Identity is per-agent; AGENTCHAT_API_KEY / AGENTCHAT_API_BASE
-env vars override it. (anchor/hook are wired by the plugin \u2014 you don't run them.)
+Each coding agent on this machine is a SEPARATE AgentChat agent with its own
+@handle, and they can DM each other. Every command that changes something acts
+on exactly one of them \u2014 the installed one, or the one you name with
+--platform <claude-code|codex>. Nothing ever touches a second agent behind your
+back; "agentchat logout --all" is the one opt-in that spans all of them.
+
+status/doctor are read-only and report every agent. AGENTCHAT_API_KEY /
+AGENTCHAT_API_BASE override the stored identity. (anchor/hook are wired by the
+plugin \u2014 you don't run them.)
 `;
 async function main(argv = process.argv.slice(2)) {
   let parsed;
@@ -7267,6 +7454,8 @@ async function main(argv = process.argv.slice(2)) {
         "api-key": { type: "string" },
         "api-base": { type: "string" },
         platform: { type: "string" },
+        all: { type: "boolean" },
+        fix: { type: "boolean" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" }
@@ -7287,12 +7476,22 @@ async function main(argv = process.argv.slice(2)) {
     console.log(USAGE);
     return 0;
   }
-  const scoped = command === "register" || command === "login" || command === "recover" || command === "daemon" || command === "anchor";
-  const active = scoped ? autoPlatform(values.platform) : void 0;
-  if (active !== void 0) bindHostHome(active);
+  const scoped = command === "register" || command === "login" || command === "recover" || command === "daemon" || command === "anchor" || command === "logout" && values.all !== true;
+  let active;
+  if (scoped) {
+    const choice = resolveHost(values.platform);
+    if (!choice.ok) {
+      console.error(ambiguousHostMessage(command, choice.candidates));
+      return 1;
+    }
+    active = choice.platform;
+    bindHostHome(active);
+  }
   switch (command) {
     case "install":
-      return runInstall();
+      return runInstall({
+        ...values.platform !== void 0 ? { platform: values.platform } : {}
+      });
     case "register":
       return runRegister({
         ...values.email !== void 0 ? { email: values.email } : {},
@@ -7319,9 +7518,12 @@ async function main(argv = process.argv.slice(2)) {
     case "status":
       return runStatus({ ...values.json !== void 0 ? { json: values.json } : {} });
     case "logout":
-      return runLogout();
+      return runLogout({
+        ...active !== void 0 ? { platform: active } : {},
+        ...values.all === true ? { all: true } : {}
+      });
     case "doctor":
-      return runDoctor();
+      return runDoctor({ ...values.fix === true ? { fix: true } : {} });
     case "daemon": {
       if (active === void 0) return 1;
       return runDaemonCmd(subcommand, active);

@@ -107,6 +107,27 @@ export function hasAnchor(platform: Platform): boolean {
   return findBlock(content, ANCHOR_START, ANCHOR_END) !== null
 }
 
+/**
+ * The handle a host's anchor block currently CLAIMS, or null if there is no
+ * block. Both anchor renderings (the generic one and Codex's richer AGENTS.md
+ * variant) state it as `**@handle**`, so one pattern covers both.
+ *
+ * This exists so `doctor` can catch an anchor that disagrees with the host's
+ * own credentials — an agent that has been told it is @a while authenticating
+ * as @b hands peers an address that reaches someone else. Matched loosely
+ * (not against the canonical handle rule) precisely so a WRONG value is still
+ * read back and reported rather than silently treated as "no anchor".
+ */
+export function readAnchorHandle(platform: Platform): string | null {
+  const filePath = anchorFilePath(platform)
+  if (filePath === null || !fs.existsSync(filePath)) return null
+  const content = fs.readFileSync(filePath, 'utf-8')
+  const block = findBlock(content, ANCHOR_START, ANCHOR_END)
+  if (block === null) return null
+  const match = /\*\*@([^*\s]+)\*\*/.exec(content.slice(block.from, block.to))
+  return match?.[1] ?? null
+}
+
 // Markers only count when they are a whole line — a marker quoted inside
 // user prose ("the plugin uses <!-- agentchat:start --> fences") must never
 // be treated as a fence, or the upsert would eat the user's content between

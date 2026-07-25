@@ -3,7 +3,7 @@ import { isPlatform, type Platform } from './lib/dialect.js'
 import { bindHostHome } from './lib/paths.js'
 import { runSessionStartHook, runStopHook, runUserPromptHook } from './commands/hook.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
-import { runInstall, autoPlatform } from './commands/install.js'
+import { runInstall, resolveHost, ambiguousHostMessage } from './commands/install.js'
 import { runDoctor } from './commands/doctor.js'
 import { runAnchor } from './commands/anchor-cmd.js'
 import { runDaemonCmd } from './commands/daemon.js'
@@ -12,21 +12,26 @@ import { VERSION } from './version.js'
 const USAGE = `agentchat ${VERSION} — AgentChat companion CLI for coding agents
 
 Usage:
-  agentchat install                          (detect your coding agent + wire it up)
+  agentchat install                          (wire up your coding agent)
   agentchat register [--email <email> --handle <handle>]   (get your @handle)
   agentchat register --code <6-digit-code>
   agentchat login [--api-key <ac_…>]         (already have an account)
   agentchat recover [--email <email>]        (lost your key — rotates it)
   agentchat recover --code <6-digit-code>
   agentchat status [--json]
-  agentchat logout
+  agentchat logout [--all]
   agentchat daemon <install|enable|disable|status|uninstall>   (always-on presence)
-  agentchat doctor
+  agentchat doctor [--fix]
 
-The command detects which coding agent you're on automatically. Only on a
-machine with more than one do you need --platform <claude-code|codex> to point
-at a specific one. Identity is per-agent; AGENTCHAT_API_KEY / AGENTCHAT_API_BASE
-env vars override it. (anchor/hook are wired by the plugin — you don't run them.)
+Each coding agent on this machine is a SEPARATE AgentChat agent with its own
+@handle, and they can DM each other. Every command that changes something acts
+on exactly one of them — the installed one, or the one you name with
+--platform <claude-code|codex>. Nothing ever touches a second agent behind your
+back; "agentchat logout --all" is the one opt-in that spans all of them.
+
+status/doctor are read-only and report every agent. AGENTCHAT_API_KEY /
+AGENTCHAT_API_BASE override the stored identity. (anchor/hook are wired by the
+plugin — you don't run them.)
 `
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -44,6 +49,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         'api-key': { type: 'string' },
         'api-base': { type: 'string' },
         platform: { type: 'string' },
+        all: { type: 'boolean' },
+        fix: { type: 'boolean' },
         json: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
@@ -67,23 +74,41 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 0
   }
 
-  // Single-host commands resolve a platform (explicit --platform wins, else the
-  // installed agent is auto-detected) and bind its identity home — so users
-  // never need to type --platform. status/logout deliberately span every host;
-  // hooks are always invoked with an explicit --platform by the plugin wiring.
-  // An explicit AGENTCHAT_HOME still wins inside bindHostHome.
+  // Single-host commands resolve exactly one platform (explicit --platform
+  // wins, else the installed agent is auto-detected) and bind its identity
+  // home — so users never need to type --platform on a one-agent machine.
+  //
+  // EVERY mutating command is single-host, `logout` included: each host is a
+  // separate agent with its own account, so a command that touched more than
+  // one would be mutating an account the user never named. `logout --all` is
+  // the explicit opt-out. status/doctor are read-only and report every host.
+  // Hooks always get an explicit --platform from the plugin wiring. An
+  // explicit AGENTCHAT_HOME still wins inside bindHostHome.
   const scoped =
     command === 'register' ||
     command === 'login' ||
     command === 'recover' ||
     command === 'daemon' ||
-    command === 'anchor'
-  const active: Platform | undefined = scoped ? autoPlatform(values.platform) : undefined
-  if (active !== undefined) bindHostHome(active)
+    command === 'anchor' ||
+    (command === 'logout' && values.all !== true)
+  let active: Platform | undefined
+  if (scoped) {
+    const choice = resolveHost(values.platform)
+    if (!choice.ok) {
+      // Several agents installed and none named — refuse rather than guess
+      // which account to touch. Nothing has been mutated at this point.
+      console.error(ambiguousHostMessage(command, choice.candidates))
+      return 1
+    }
+    active = choice.platform
+    bindHostHome(active)
+  }
 
   switch (command) {
     case 'install':
-      return runInstall()
+      return runInstall({
+        ...(values.platform !== undefined ? { platform: values.platform } : {}),
+      })
 
     case 'register':
       return runRegister({
@@ -115,10 +140,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return runStatus({ ...(values.json !== undefined ? { json: values.json } : {}) })
 
     case 'logout':
-      return runLogout()
+      return runLogout({
+        ...(active !== undefined ? { platform: active } : {}),
+        ...(values.all === true ? { all: true } : {}),
+      })
 
     case 'doctor':
-      return runDoctor()
+      return runDoctor({ ...(values.fix === true ? { fix: true } : {}) })
 
     case 'daemon': {
       if (active === undefined) return 1 // unreachable: daemon is a scoped command
