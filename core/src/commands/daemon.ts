@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { hostHome } from '../lib/paths.js'
 import { readCredentialsFileAt } from '../lib/credentials.js'
 import type { Platform } from '../lib/dialect.js'
+import { hint } from '../lib/branding.js'
 
 // ─── agentchat daemon — always-on presence, made one-command ─────────────────
 //
@@ -149,7 +150,7 @@ export async function runDaemonCmd(sub: string | undefined, platform: Platform):
     const creds = readCredentialsFileAt(home)
     if (creds === null) {
       console.error(
-        `No AgentChat identity for ${platform} yet. Register first, then run:\n  agentchat daemon install --platform ${platform}`,
+        `No AgentChat identity for ${platform} yet. Register first, then run:\n  ${hint('daemon install', platform)}`,
       )
       return 1
     }
@@ -167,7 +168,7 @@ export async function runDaemonCmd(sub: string | undefined, platform: Platform):
         [
           '',
           `Always-on is ON for @${creds.handle} — it answers DMs even when you're not in a session, while this machine is up.`,
-          `Want session-only instead? Turn it off any time:  agentchat daemon disable --platform ${platform}`,
+          `Want session-only instead? Turn it off any time:  ${hint('daemon disable', platform)}`,
         ].join('\n'),
       )
     }
@@ -177,11 +178,11 @@ export async function runDaemonCmd(sub: string | undefined, platform: Platform):
   if (sub === 'enable' || sub === 'disable' || sub === 'status' || sub === 'uninstall') {
     if (!fs.existsSync(daemonEntry())) {
       if (sub === 'status') {
-        console.log('Always-on: not installed (session-only). Turn it on with: agentchat daemon install')
+        console.log(`Always-on: not installed (session-only). Turn it on with: ${hint('daemon install')}`)
         return 0
       }
       if (sub === 'disable') clearAlwaysOnWanted(home) // already session-only → make intent match
-      console.error(`Always-on isn't set up yet. Turn it on with:  agentchat daemon install --platform ${platform}`)
+      console.error(`Always-on isn't set up yet. Turn it on with:  ${hint('daemon install', platform)}`)
       return sub === 'disable' ? 0 : 1 // already session-only → disable is a no-op success
     }
     const code = runDaemon([sub, '--runtime', runtime, '--home', home])

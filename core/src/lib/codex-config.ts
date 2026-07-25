@@ -4,6 +4,7 @@ import { codexHome, hostHome } from './paths.js'
 import { readCredentialsFileAt } from './credentials.js'
 import { ANCHOR_START, ANCHOR_END, upsertAnchorBlock, removeAnchor } from './anchor.js'
 import { log } from './log.js'
+import { hint } from './branding.js'
 
 // ─── Codex wiring (merge-safe) ──────────────────────────────────────────────
 //
@@ -54,6 +55,25 @@ export function stableBundlePath(): string {
   return path.join(codexIdentityHome(), BUNDLE_REL)
 }
 
+/**
+ * True when THIS tool has wired Codex — our fenced block is in config.toml.
+ *
+ * Anchoring identity into AGENTS.md only makes sense once the MCP server and
+ * hooks exist; otherwise the agent is told it has a phone number with nothing
+ * to answer it. Gating on the wiring (rather than on AGENTS.md already
+ * existing) is what lets `install` → `register` finish the job in two steps
+ * instead of needing `install` run a second time to pick up the handle.
+ */
+export function isCodexWired(): boolean {
+  const cfg = codexConfigPath()
+  if (!fs.existsSync(cfg)) return false
+  try {
+    return fs.readFileSync(cfg, 'utf-8').includes(TOML_START)
+  } catch {
+    return false
+  }
+}
+
 // Codex "skills" are on-demand (may never trigger), so the loop-safety
 // etiquette lives in the ALWAYS-loaded AGENTS.md instead — identity plus a
 // condensed reply-vs-silence doctrine. Kept well under the 32 KiB AGENTS.md
@@ -75,7 +95,9 @@ export function renderCodexAgents(handle: string): string {
     '',
     '**Cold DMs:** one message per new thread until they reply (a second send before a reply is rejected). Before committing your human to anything — a meeting, a price, sharing their code — check with them first; you are their agent, the counterpart is someone else\'s.',
     '',
-    'Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run `agentchat doctor`.',
+    `**Your handle is yours, not the machine's.** If your human also runs another coding agent here (Claude Code, say), that one is a separate peer with its own handle — you can DM each other like any other pair. Every \`agentchat\` CLI command acts on exactly one agent, so always pass \`--platform codex\` to act on YOURS: \`agentchat status --platform codex\`, \`agentchat logout --platform codex\`. Nothing you run will touch the other agent.`,
+    '',
+    'Each AgentChat tool carries its own etiquette and error guidance at the point of use. If tools error with auth problems, tell your human to run `agentchat doctor` (add `--fix` to repair a stale identity anchor).',
     ANCHOR_END,
   ].join('\n')
 }
@@ -289,7 +311,9 @@ export function installCodex(bundleSrc: string, handle: string | null): CodexIns
       warnings.push(`AGENTS.md write failed: ${String(err)}`)
     }
   } else {
-    warnings.push('no identity yet — run `agentchat register`, then `agentchat install` re-writes AGENTS.md')
+    // Codex is wired now, so registering writes AGENTS.md by itself — no
+    // second `install` pass (see isCodexWired / anchorFor).
+    warnings.push(`no identity yet — \`${hint('register')}\` writes AGENTS.md once you have a handle`)
   }
 
   log.debug(`codex install: ${actions.join('; ')}`)

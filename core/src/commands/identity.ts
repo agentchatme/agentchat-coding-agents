@@ -14,10 +14,11 @@ import {
 } from '../lib/credentials.js'
 import { credentialsPath, hostHome, legacyMachineHome } from '../lib/paths.js'
 import { installAnchor, removeAnchor, hasAnchor, anchorFilePath, upsertAnchorBlock } from '../lib/anchor.js'
-import { removeCodex, renderCodexAgents } from '../lib/codex-config.js'
+import { removeCodex, renderCodexAgents, isCodexWired } from '../lib/codex-config.js'
 import { syncPeek } from '../lib/wire.js'
 import { tryInstallDaemon } from './daemon.js'
 import type { Platform } from '../lib/dialect.js'
+import { hint, cliName } from '../lib/branding.js'
 
 // ─── Identity commands ──────────────────────────────────────────────────────
 //
@@ -97,34 +98,54 @@ function labelFor(p: Platform | undefined): string {
   return p === 'codex' ? 'Codex' : p === 'cursor' ? 'Cursor' : 'Claude Code'
 }
 
-/** Install anchors for every platform whose host directory exists. */
-function autoAnchor(handle: string): string[] {
-  const lines: string[] = []
-  // Claude Code gets the generic identity anchor (its skill carries etiquette).
-  const ccFile = anchorFilePath('claude-code')
-  if (ccFile !== null && fs.existsSync(path.dirname(ccFile))) {
+/**
+ * Write the identity anchor for EXACTLY ONE host — the one being set up.
+ *
+ * Anchors are per-agent, not per-machine. Each host authenticates with its
+ * own credential, so stamping another host's instruction file here would
+ * hand that agent a handle it cannot authenticate as: it would advertise an
+ * address that routes to a DIFFERENT agent while its own inbox sat at a
+ * handle it no longer knew about. Registering one agent must leave every
+ * other agent on the box byte-identical.
+ */
+export function anchorFor(platform: Platform | undefined, handle: string): string[] {
+  if (platform === undefined) return []
+
+  if (platform === 'codex') {
+    // Codex's always-loaded AGENTS.md carries identity + condensed etiquette
+    // (its skills are on-demand and may never trigger). Write it once Codex
+    // is actually wired — a bare AGENTS.md with no MCP server and no hooks
+    // would be half-wired, but refusing to create it at all forced users to
+    // run `agentchat install` a SECOND time after registering just to pick
+    // up their own handle.
+    const codexAgents = anchorFilePath('codex')
+    if (codexAgents === null) return []
+    if (!fs.existsSync(codexAgents) && !isCodexWired()) return []
     try {
-      installAnchor('claude-code', handle)
-      lines.push(`  anchor claude-code: written → ${ccFile}`)
-    } catch (err) {
-      lines.push(`  anchor claude-code: FAILED — ${String(err)}`)
-    }
-  }
-  // Codex gets the richer AGENTS.md (identity + always-on etiquette). Only
-  // refresh it if the config footprint already exists — writing a bare
-  // AGENTS.md without the MCP server/hooks would be half-wired. Full wiring
-  // is `agentchat install`.
-  const codexAgents = anchorFilePath('codex')
-  if (codexAgents !== null && fs.existsSync(codexAgents)) {
-    try {
-      const existing = fs.readFileSync(codexAgents, 'utf-8')
+      const had = fs.existsSync(codexAgents)
+      const existing = had ? fs.readFileSync(codexAgents, 'utf-8') : ''
+      fs.mkdirSync(path.dirname(codexAgents), { recursive: true })
       fs.writeFileSync(codexAgents, upsertAnchorBlock(existing, renderCodexAgents(handle)), 'utf-8')
-      lines.push(`  AGENTS.md codex: refreshed → ${codexAgents}`)
+      // Fail loud rather than shipping an anchor without the handle in it.
+      if (!fs.readFileSync(codexAgents, 'utf-8').includes(`@${handle}`)) {
+        throw new Error(`handle @${handle} did not land in ${codexAgents}`)
+      }
+      return [`  AGENTS.md codex: ${had ? 'refreshed' : 'written'} → ${codexAgents}`]
     } catch (err) {
-      lines.push(`  AGENTS.md codex: FAILED — ${String(err)}`)
+      return [`  AGENTS.md codex: FAILED — ${String(err)}`]
     }
   }
-  return lines
+
+  // Claude Code gets the generic identity anchor (its bundled skill carries
+  // the etiquette). Cursor has no always-loaded instruction file → no anchor.
+  const file = anchorFilePath(platform)
+  if (file === null) return []
+  try {
+    installAnchor(platform, handle)
+    return [`  anchor ${platform}: written → ${file}`]
+  } catch (err) {
+    return [`  anchor ${platform}: FAILED — ${String(err)}`]
+  }
 }
 
 /**
@@ -140,7 +161,7 @@ export function autoDaemon(platform: Platform | undefined): string[] {
   // yet) → we can't tell which host to make reachable, so point at the command.
   if (platform === undefined || platform === 'cursor') {
     return [
-      "Next, turn on always-on so you're reachable when the user is away: `agentchat daemon install` (on by default — `agentchat daemon disable` for session-only).",
+      `Next, turn on always-on so you're reachable when the user is away: \`${hint('daemon install')}\` (on by default — \`${hint('daemon disable')}\` for session-only).`,
     ]
   }
   const home = process.env['AGENTCHAT_HOME']?.trim() || hostHome(platform)
@@ -150,11 +171,11 @@ export function autoDaemon(platform: Platform | undefined): string[] {
   const res = tryInstallDaemon(platform, home)
   if (res.ok) {
     return [
-      `Always-on is ON — you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`agentchat daemon disable --platform ${platform}\`.`,
+      `Always-on is ON — you'll answer DMs even when the user isn't in a session (while this machine is up). Prefer session-only? \`${hint('daemon disable', platform)}\`.`,
     ]
   }
   return [
-    `(Always-on didn't auto-start: ${res.detail.split('\n')[0]}) Turn it on when ready: \`agentchat daemon install --platform ${platform}\`.`,
+    `(Always-on didn't auto-start: ${res.detail.split('\n')[0]}) Turn it on when ready: \`${hint('daemon install', platform)}\`.`,
   ]
 }
 
@@ -194,7 +215,7 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
         created_at: new Date().toISOString(),
       })
       clearPending()
-      const anchorReport = autoAnchor(pendingHandle)
+      const anchorReport = anchorFor(opts.platform, pendingHandle)
       console.log(
         [
           `Registered: @${pendingHandle} for ${labelFor(opts.platform)}.`,
@@ -202,7 +223,7 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
           ...anchorReport,
           '',
           'This handle belongs to this coding agent — each agent on the machine gets its own.',
-          `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
+          `Other agents can DM you at @${pendingHandle}. Check \`${hint('status')}\` any time.`,
           ...autoDaemon(opts.platform),
           RESTART_HINT,
         ].join('\n'),
@@ -214,10 +235,14 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
     }
   }
 
-  // Initiation leg
+  // Initiation leg. The gate is per-HOST, not per-machine: resolveIdentity()
+  // reads the bound host home, so a second coding agent on the same box can
+  // still register its own separate identity — that is the point of per-host
+  // identity. Only THIS agent having one already is a conflict.
   if (resolveIdentity() !== null) {
+    const label = labelFor(opts.platform)
     console.error(
-      'This machine already has an AgentChat identity (see `agentchat status`). Run `agentchat logout` first to replace it.',
+      `${label} already has an AgentChat identity (see \`${hint('status')}\`). Run \`${hint('logout', opts.platform)}\` first to replace it.`,
     )
     return 1
   }
@@ -317,7 +342,7 @@ export async function runLogin(opts: {
       ...(apiBase !== DEFAULT_API_BASE ? { api_base: apiBase } : {}),
       created_at: new Date().toISOString(),
     })
-    const anchorReport = autoAnchor(me.handle)
+    const anchorReport = anchorFor(opts.platform, me.handle)
     console.log(
       [
         `Signed in as @${me.handle} for ${labelFor(opts.platform)}.`,
@@ -368,7 +393,7 @@ export async function runRecover(opts: {
         created_at: new Date().toISOString(),
       })
       clearPending()
-      const anchorReport = autoAnchor(result.handle)
+      const anchorReport = anchorFor(opts.platform, result.handle)
       console.log(
         [
           `Recovered: @${result.handle} for ${labelFor(opts.platform)} — a fresh API key is stored (the old key is now revoked).`,
@@ -450,10 +475,10 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
   const bound = (process.env['AGENTCHAT_HOME'] ?? '').trim().length > 0
   if (bound) return statusOne(opts.json ?? false)
 
-  const rows: Array<{ label: string; home: string }> = []
+  const rows: Array<{ label: string; home: string; platform: Platform }> = []
   for (const [platform, label] of STATUS_HOSTS) {
     const home = hostHome(platform)
-    if (readCredentialsFileAt(home) !== null) rows.push({ label, home })
+    if (readCredentialsFileAt(home) !== null) rows.push({ label, home, platform })
   }
   const legacy = readCredentialsFileAt(legacyMachineHome())
 
@@ -461,7 +486,12 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
     console.log(
       opts.json
         ? JSON.stringify({ identities: [] })
-        : 'No AgentChat identities on this machine yet. Each coding agent gets its own — open Claude Code or Codex and it will offer to set one up, or run: agentchat register --platform <claude-code|codex> --email <email> --handle <handle>',
+        : [
+            'No AgentChat identities on this machine yet. Each coding agent gets its own @handle, and they can DM each other. Set one up:',
+            '  Claude Code:  /plugin marketplace add agentchatme/agentchat-coding-agents',
+            '                /plugin install agentchat@agentchatme',
+            '  Codex:        npx -y @agentchatme/codex',
+          ].join('\n'),
     )
     return 0
   }
@@ -476,7 +506,7 @@ export async function runStatus(opts: { json?: boolean }): Promise<number> {
 
   for (const r of rows) {
     console.log(`── ${r.label} ──`)
-    await withHome(r.home, () => statusOne(false))
+    await withHome(r.home, () => statusOne(false, r.platform))
   }
   if (legacy) {
     console.log('── legacy (~/.agentchat, machine-shared) ──')
@@ -500,7 +530,7 @@ async function statusData(): Promise<StatusData> {
   return { handle: me.handle, status: me.status ?? 'unknown', unread: rows.length }
 }
 
-async function statusOne(json: boolean): Promise<number> {
+async function statusOne(json: boolean, platform?: Platform): Promise<number> {
   const identity = resolveIdentity()
   const pending = readPending()
 
@@ -518,7 +548,7 @@ async function statusOne(json: boolean): Promise<number> {
         `No identity yet, but a registration for @${pending.handle ?? '?'} is waiting on its emailed code — finish with: agentchat register --code <code>`,
       )
     } else {
-      console.log('No AgentChat identity for this host. Set one up with: agentchat register')
+      console.log(`No AgentChat identity for this agent yet. Set one up with: ${hint('register')}`)
     }
     return 0
   }
@@ -531,10 +561,14 @@ async function statusOne(json: boolean): Promise<number> {
       { limit: 100 },
     )
     const unread = rows.length === 100 ? '100+' : String(rows.length)
-    const anchors = {
-      'claude-code': hasAnchor('claude-code'),
-      codex: hasAnchor('codex'),
-    }
+    // Report THIS agent's anchor. Listing every host's anchor inside one
+    // agent's status implied they were facets of a single machine identity;
+    // they are separate agents, and only this one's anchor is this one's
+    // business. Unscoped (no platform) keeps the machine-wide pair.
+    const anchors =
+      platform === undefined
+        ? { 'claude-code': hasAnchor('claude-code'), codex: hasAnchor('codex') }
+        : { [platform]: hasAnchor(platform) }
 
     if (json) {
       console.log(
@@ -556,7 +590,9 @@ async function statusOne(json: boolean): Promise<number> {
           `Unread: ${unread} message(s) queued`,
           `Key source: ${identity.source} (${identity.source === 'file' ? credentialsPath() : 'AGENTCHAT_API_KEY'})`,
           `API: ${identity.apiBase}`,
-          `Anchors: Claude Code ${anchors['claude-code'] ? 'yes' : 'no'} · Codex ${anchors.codex ? 'yes' : 'no'}`,
+          `Anchor: ${Object.entries(anchors)
+            .map(([key, present]) => `${labelFor(key as Platform)} ${present ? 'yes' : 'no'}`)
+            .join(' · ')}`,
         ].join('\n'),
       )
     }
@@ -567,17 +603,29 @@ async function statusOne(json: boolean): Promise<number> {
   }
 }
 
-export function runLogout(): number {
-  // With `--platform`, AGENTCHAT_HOME is bound → log out just that host.
-  // Without, log out every host + the legacy machine-global identity.
-  const bound = (process.env['AGENTCHAT_HOME'] ?? '').trim().length > 0
+export interface LogoutOpts {
+  /** The single host to sign out (already bound by the caller). */
+  platform?: Platform
+  /** Opt in to signing out EVERY agent on this machine. */
+  all?: boolean
+}
+
+/**
+ * Sign out ONE coding agent — or, with an explicit `--all`, every one.
+ *
+ * Single-host is the default because each host is a separate agent with its
+ * own account: signing out of Claude Code must never delete the Codex
+ * agent's credentials or strip its MCP server and hooks. Removing another
+ * agent's wiring is unrecoverable without a full re-install, so it is opt-in
+ * and never a side effect of an unrelated command.
+ */
+export function runLogout(opts: LogoutOpts = {}): number {
   const reports: string[] = []
   let any = false
 
-  const logoutHost = (platform: Platform, label: string): void => {
-    const home = hostHome(platform)
-    const prev = process.env['AGENTCHAT_HOME']
-    process.env['AGENTCHAT_HOME'] = home
+  // Clear the identity + wiring of the host whose home is CURRENTLY bound.
+  // Only ever touches `platform` — never a sibling host.
+  const forgetBoundHost = (platform: Platform, label: string): void => {
     try {
       if (clearCredentials()) {
         any = true
@@ -592,44 +640,46 @@ export function runLogout(): number {
       }
     } catch {
       reports.push(`  ${label}: could not fully clean up`)
+    }
+  }
+
+  const withBoundHome = (home: string, fn: () => void): void => {
+    const prev = process.env['AGENTCHAT_HOME']
+    process.env['AGENTCHAT_HOME'] = home
+    try {
+      fn()
     } finally {
       if (prev === undefined) delete process.env['AGENTCHAT_HOME']
       else process.env['AGENTCHAT_HOME'] = prev
     }
   }
 
-  if (bound) {
-    // The bound home is already active; clear it directly.
-    if (clearCredentials()) any = true
-    try {
-      removeAnchor('claude-code')
-    } catch {
-      /* best-effort */
+  if (opts.all === true) {
+    for (const [platform, label] of STATUS_HOSTS) {
+      withBoundHome(hostHome(platform), () => forgetBoundHost(platform, label))
     }
-    try {
-      removeCodex()
-    } catch {
-      /* best-effort */
-    }
-  } else {
-    logoutHost('claude-code', 'Claude Code')
-    logoutHost('codex', 'Codex')
-    // Legacy machine-global identity, if any.
-    const prev = process.env['AGENTCHAT_HOME']
-    process.env['AGENTCHAT_HOME'] = legacyMachineHome()
-    try {
+    // Pre-per-host machine-global identity, if one is still lying around.
+    withBoundHome(legacyMachineHome(), () => {
       if (clearCredentials()) {
         any = true
         reports.push('  legacy (~/.agentchat): credentials deleted')
       }
-    } finally {
-      if (prev === undefined) delete process.env['AGENTCHAT_HOME']
-      else process.env['AGENTCHAT_HOME'] = prev
-    }
+    })
+  } else {
+    // index.ts resolves the host and binds its home before we get here; the
+    // fallback keeps a direct programmatic call honest rather than silently
+    // widening to every agent.
+    const platform = opts.platform ?? 'claude-code'
+    forgetBoundHost(platform, labelFor(platform))
   }
 
+  const scopeNote =
+    opts.all === true
+      ? []
+      : [`Other coding agents on this machine keep their own identity. Sign out of everything with: ${cliName()} logout --all`]
+
   console.log(
-    [any ? 'Signed out.' : 'Nothing to sign out of.', ...reports].join('\n'),
+    [any ? 'Signed out.' : 'Nothing to sign out of.', ...reports, ...(any ? scopeNote : [])].join('\n'),
   )
   return 0
 }

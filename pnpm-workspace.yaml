@@ -1,5 +1,6 @@
 packages:
   - core
   - daemon
+  - codex
 allowBuilds:
   esbuild: true
