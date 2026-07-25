@@ -90,6 +90,13 @@ async function prompt(question: string): Promise<string> {
 const RESTART_HINT =
   'Your messaging tools pick this up immediately — no restart needed. (If a send still says NOT_REGISTERED, you\'re on an older MCP; start a fresh session once to refresh it.)'
 
+/** Human label for the host this identity is scoped to — makes the auto-detected
+ *  platform visible ("…for Claude Code") so a multi-agent user can tell which one
+ *  got set up (and pass --platform to pick the other). */
+function labelFor(p: Platform | undefined): string {
+  return p === 'codex' ? 'Codex' : p === 'cursor' ? 'Cursor' : 'Claude Code'
+}
+
 /** Install anchors for every platform whose host directory exists. */
 function autoAnchor(handle: string): string[] {
   const lines: string[] = []
@@ -190,11 +197,11 @@ export async function runRegister(opts: RegisterOpts): Promise<number> {
       const anchorReport = autoAnchor(pendingHandle)
       console.log(
         [
-          `Registered: @${pendingHandle}`,
+          `Registered: @${pendingHandle} for ${labelFor(opts.platform)}.`,
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           '',
-          'This identity is scoped to this coding agent — each coding agent on the machine gets its own handle.',
+          'This handle belongs to this coding agent — each agent on the machine gets its own.',
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
           ...autoDaemon(opts.platform),
           RESTART_HINT,
@@ -313,7 +320,7 @@ export async function runLogin(opts: {
     const anchorReport = autoAnchor(me.handle)
     console.log(
       [
-        `Signed in as @${me.handle}.`,
+        `Signed in as @${me.handle} for ${labelFor(opts.platform)}.`,
         ...anchorReport,
         ...autoDaemon(opts.platform),
         RESTART_HINT,
@@ -364,7 +371,7 @@ export async function runRecover(opts: {
       const anchorReport = autoAnchor(result.handle)
       console.log(
         [
-          `Recovered: @${result.handle} — a fresh API key is stored (the old key is now revoked).`,
+          `Recovered: @${result.handle} for ${labelFor(opts.platform)} — a fresh API key is stored (the old key is now revoked).`,
           ...anchorReport,
           ...autoDaemon(opts.platform),
           RESTART_HINT,

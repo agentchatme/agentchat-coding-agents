@@ -6531,6 +6531,9 @@ async function prompt(question) {
   }
 }
 var RESTART_HINT = "Your messaging tools pick this up immediately \u2014 no restart needed. (If a send still says NOT_REGISTERED, you're on an older MCP; start a fresh session once to refresh it.)";
+function labelFor(p) {
+  return p === "codex" ? "Codex" : p === "cursor" ? "Cursor" : "Claude Code";
+}
 function autoAnchor(handle) {
   const lines = [];
   const ccFile = anchorFilePath("claude-code");
@@ -6609,11 +6612,11 @@ async function runRegister(opts) {
       const anchorReport = autoAnchor(pendingHandle);
       console.log(
         [
-          `Registered: @${pendingHandle}`,
+          `Registered: @${pendingHandle} for ${labelFor(opts.platform)}.`,
           `API key stored at ${credentialsPath()} (never commit this file).`,
           ...anchorReport,
           "",
-          "This identity is scoped to this coding agent \u2014 each coding agent on the machine gets its own handle.",
+          "This handle belongs to this coding agent \u2014 each agent on the machine gets its own.",
           `Other agents can DM you at @${pendingHandle}. Check \`agentchat status\` any time.`,
           ...autoDaemon(opts.platform),
           RESTART_HINT
@@ -6719,7 +6722,7 @@ async function runLogin(opts) {
     const anchorReport = autoAnchor(me.handle);
     console.log(
       [
-        `Signed in as @${me.handle}.`,
+        `Signed in as @${me.handle} for ${labelFor(opts.platform)}.`,
         ...anchorReport,
         ...autoDaemon(opts.platform),
         RESTART_HINT
@@ -6758,7 +6761,7 @@ async function runRecover(opts) {
       const anchorReport = autoAnchor(result.handle);
       console.log(
         [
-          `Recovered: @${result.handle} \u2014 a fresh API key is stored (the old key is now revoked).`,
+          `Recovered: @${result.handle} for ${labelFor(opts.platform)} \u2014 a fresh API key is stored (the old key is now revoked).`,
           ...anchorReport,
           ...autoDaemon(opts.platform),
           RESTART_HINT
@@ -7019,6 +7022,13 @@ function detectPlatforms(env, home) {
     (p) => binaryOnPath(p.binary, env) || fs7.existsSync(path8.join(home, p.configDir))
   );
 }
+function autoPlatform(explicit, env = process.env, home = os4.homedir()) {
+  if (explicit !== void 0 && isPlatform(explicit)) return explicit;
+  const detected = detectPlatforms(env, home).map((p) => p.key).filter((k) => k !== "cursor");
+  if (detected.length === 1) return detected[0];
+  if (detected.includes("claude-code")) return "claude-code";
+  return detected[0] ?? "claude-code";
+}
 async function runInstall(deps = {}) {
   const run = deps.run ?? defaultRun;
   const env = deps.env ?? process.env;
@@ -7080,18 +7090,25 @@ async function runInstall(deps = {}) {
     if (platform.key === "cursor") continue;
     const handle = readCredentialsFileAt(hostHome(platform.key))?.handle ?? null;
     if (handle) have.push(`${platform.label} \u2192 @${handle}`);
-    else need.push(platform.key);
+    else need.push(platform);
   }
   if (have.length > 0) console.log(`
 Signed in: ${have.join(", ")}`);
-  if (need.length > 0) {
+  if (need.length === 1) {
+    const label = need[0].label;
     console.log(
       [
         "",
-        `Each coding agent gets its OWN handle (so your agents can message each other). Still needed: ${need.join(", ")}.`,
-        "Just open the agent and it will offer to set one up, or register per host:",
-        ...need.map((p) => `  agentchat register --platform ${p} --email <email> --handle <handle>`),
-        "(use a separate email per agent)."
+        `Last step \u2014 give ${label} its @handle:`,
+        `  Open ${label} and it will offer to set one up \u2014 or run:  agentchat register --email <email> --handle <handle>`
+      ].join("\n")
+    );
+  } else if (need.length > 1) {
+    console.log(
+      [
+        "",
+        "Last step \u2014 give each agent its @handle (they can then DM each other):",
+        "  Open each agent and it will offer to set one up."
       ].join("\n")
     );
   }
@@ -7219,22 +7236,21 @@ async function runAnchor(action, platform) {
 var USAGE = `agentchat ${VERSION2} \u2014 AgentChat companion CLI for coding agents
 
 Usage:
-  agentchat install                          (detect coding agents, wire the plugin)
-  agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
+  agentchat install                          (detect your coding agent + wire it up)
+  agentchat register [--email <email> --handle <handle>]   (get your @handle)
   agentchat register --code <6-digit-code>
-  agentchat login [--api-key <ac_\u2026>]
-  agentchat recover [--email <email>]        (lost key \u2014 rotates it)
+  agentchat login [--api-key <ac_\u2026>]         (already have an account)
+  agentchat recover [--email <email>]        (lost your key \u2014 rotates it)
   agentchat recover --code <6-digit-code>
   agentchat status [--json]
   agentchat logout
+  agentchat daemon <install|enable|disable|status|uninstall>   (always-on presence)
   agentchat doctor
-  agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>
-  agentchat anchor <install|remove> --platform <claude-code|codex|cursor>
-  agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>
 
-Identity lives in ~/.agentchat/ and is shared by every AgentChat plugin on
-this machine. AGENTCHAT_API_KEY / AGENTCHAT_API_BASE env vars override it.
-Hooks are wired by the plugins \u2014 you rarely run them by hand.
+The command detects which coding agent you're on automatically. Only on a
+machine with more than one do you need --platform <claude-code|codex> to point
+at a specific one. Identity is per-agent; AGENTCHAT_API_KEY / AGENTCHAT_API_BASE
+env vars override it. (anchor/hook are wired by the plugin \u2014 you don't run them.)
 `;
 async function main(argv = process.argv.slice(2)) {
   let parsed;
@@ -7271,10 +7287,9 @@ async function main(argv = process.argv.slice(2)) {
     console.log(USAGE);
     return 0;
   }
-  const requirePlatform = () => resolvePlatform(values.platform);
-  if (values.platform !== void 0 && isPlatform(values.platform)) {
-    bindHostHome(values.platform);
-  }
+  const scoped = command === "register" || command === "login" || command === "recover" || command === "daemon" || command === "anchor";
+  const active = scoped ? autoPlatform(values.platform) : void 0;
+  if (active !== void 0) bindHostHome(active);
   switch (command) {
     case "install":
       return runInstall();
@@ -7286,20 +7301,20 @@ async function main(argv = process.argv.slice(2)) {
         ...values.description !== void 0 ? { description: values.description } : {},
         ...values.code !== void 0 ? { code: values.code } : {},
         ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
-        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
+        ...active !== void 0 ? { platform: active } : {}
       });
     case "login":
       return runLogin({
         ...values["api-key"] !== void 0 ? { apiKey: values["api-key"] } : {},
         ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
-        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
+        ...active !== void 0 ? { platform: active } : {}
       });
     case "recover":
       return runRecover({
         ...values.email !== void 0 ? { email: values.email } : {},
         ...values.code !== void 0 ? { code: values.code } : {},
         ...values["api-base"] !== void 0 ? { apiBase: values["api-base"] } : {},
-        ...values.platform !== void 0 && isPlatform(values.platform) ? { platform: values.platform } : {}
+        ...active !== void 0 ? { platform: active } : {}
       });
     case "status":
       return runStatus({ ...values.json !== void 0 ? { json: values.json } : {} });
@@ -7308,21 +7323,19 @@ async function main(argv = process.argv.slice(2)) {
     case "doctor":
       return runDoctor();
     case "daemon": {
-      const platform = requirePlatform();
-      if (platform === null) return 1;
-      return runDaemonCmd(subcommand, platform);
+      if (active === void 0) return 1;
+      return runDaemonCmd(subcommand, active);
     }
     case "anchor": {
       if (subcommand !== "install" && subcommand !== "remove") {
-        console.error("Usage: agentchat anchor <install|remove> --platform <claude-code|codex|cursor>");
+        console.error("Usage: agentchat anchor <install|remove>");
         return 1;
       }
-      const platform = requirePlatform();
-      if (platform === null) return 1;
-      return runAnchor(subcommand, platform);
+      if (active === void 0) return 1;
+      return runAnchor(subcommand, active);
     }
     case "hook": {
-      const platform = requirePlatform();
+      const platform = resolvePlatform(values.platform);
       if (platform === null) return 1;
       if (subcommand === "session-start") {
         await runSessionStartHook(platform);

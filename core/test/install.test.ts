@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { binaryOnPath, detectPlatforms, runInstall } from '../src/commands/install.js'
+import { autoPlatform, binaryOnPath, detectPlatforms, runInstall } from '../src/commands/install.js'
 
 let home: string
 let fakeBinDir: string
@@ -138,12 +138,15 @@ describe('runInstall', () => {
     expect(logs.join('\n')).toContain('No supported coding agent found')
   })
 
-  it('points to per-host registration when no identity, and shows the handle when present', async () => {
+  it('gives a clean single-agent registration hint with NO --platform jargon', async () => {
     fakeBinary('claude')
     const logs: string[] = []
     vi.mocked(console.log).mockImplementation((msg: unknown) => logs.push(String(msg)))
     await runInstall({ env: { PATH: fakeBinDir } as NodeJS.ProcessEnv, homedir: home, run: () => 0 })
-    expect(logs.join('\n')).toContain('agentchat register --platform claude-code')
+    const out = logs.join('\n')
+    expect(out).toContain('Last step — give Claude Code its @handle')
+    expect(out).toContain('agentchat register --email') // clean command; platform is auto-detected
+    expect(out).not.toContain('--platform') // the whole point — no platform choice leaked
 
     logs.length = 0
     // Credential lives in the CLAUDE host home now, not a machine-global file.
@@ -155,5 +158,44 @@ describe('runInstall', () => {
     )
     await runInstall({ env: { PATH: fakeBinDir } as NodeJS.ProcessEnv, homedir: home, run: () => 0 })
     expect(logs.join('\n')).toContain('Signed in: Claude Code → @demo')
+  })
+})
+
+describe('autoPlatform (what lets users drop --platform)', () => {
+  const env = (): NodeJS.ProcessEnv => ({ PATH: fakeBinDir }) as NodeJS.ProcessEnv
+
+  it('an explicit --platform always wins over detection', () => {
+    fakeBinary('claude') // claude is present…
+    expect(autoPlatform('codex', env(), home)).toBe('codex') // …but the flag wins
+  })
+
+  it('ignores an invalid explicit value and falls back to detection', () => {
+    fakeBinary('codex')
+    expect(autoPlatform('nonsense', env(), home)).toBe('codex')
+  })
+
+  it('exactly one agent installed → that one (no flag needed)', () => {
+    fakeBinary('codex')
+    expect(autoPlatform(undefined, env(), home)).toBe('codex')
+  })
+
+  it('claude-code only → claude-code', () => {
+    fakeBinary('claude')
+    expect(autoPlatform(undefined, env(), home)).toBe('claude-code')
+  })
+
+  it('both installed → prefers Claude Code (the flagship)', () => {
+    fakeBinary('claude')
+    fakeBinary('codex')
+    expect(autoPlatform(undefined, env(), home)).toBe('claude-code')
+  })
+
+  it('nothing detected → safe default of claude-code (scopes to ~/.claude/agentchat)', () => {
+    expect(autoPlatform(undefined, env(), home)).toBe('claude-code')
+  })
+
+  it('cursor is excluded (no identity support yet) → falls to the default', () => {
+    fakeBinary('cursor-agent')
+    expect(autoPlatform(undefined, env(), home)).toBe('claude-code')
   })
 })

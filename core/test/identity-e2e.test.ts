@@ -85,6 +85,10 @@ async function run(
         AGENTCHAT_API_KEY: '',
         AGENTCHAT_API_BASE: '',
         AGENTCHAT_LOG_LEVEL: 'silent',
+        // register now auto-scopes to a platform and attempts always-on; a
+        // npm-less PATH makes that fetch fail fast (graceful fallback) so no test
+        // does a real install. Individual tests can still override PATH.
+        PATH: path.join(os.tmpdir(), 'agentchat-e2e-no-npm'),
         ...extraEnv,
       },
     })
@@ -108,10 +112,13 @@ describe('register e2e', () => {
 
     const second = await run(['register', '--code', '123456'])
     expect(second.code).toBe(0)
-    expect(second.stdout).toContain('Registered: @e2e-agent')
+    // No --platform passed, yet it auto-detected Claude Code (its config dir
+    // exists above) and says so — that's the friction fix.
+    expect(second.stdout).toContain('Registered: @e2e-agent for Claude Code')
     expect(second.stdout).toContain('no restart needed') // MCP re-reads identity now
     expect(second.stdout).toContain('anchor claude-code: written')
-    // No --platform here → always-on shows the manual pointer, never fetches/installs.
+    // Auto-scoped → always-on is attempted; npm is neutered here so it degrades
+    // to the manual pointer rather than fetching.
     expect(second.stdout).toContain('daemon install')
 
     const creds = JSON.parse(fs.readFileSync(path.join(home, 'credentials'), 'utf-8'))

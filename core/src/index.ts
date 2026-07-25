@@ -1,9 +1,9 @@
 import { parseArgs } from 'node:util'
-import { isPlatform } from './lib/dialect.js'
+import { isPlatform, type Platform } from './lib/dialect.js'
 import { bindHostHome } from './lib/paths.js'
 import { runSessionStartHook, runStopHook, runUserPromptHook } from './commands/hook.js'
 import { runRegister, runLogin, runRecover, runStatus, runLogout } from './commands/identity.js'
-import { runInstall } from './commands/install.js'
+import { runInstall, autoPlatform } from './commands/install.js'
 import { runDoctor } from './commands/doctor.js'
 import { runAnchor } from './commands/anchor-cmd.js'
 import { runDaemonCmd } from './commands/daemon.js'
@@ -12,22 +12,21 @@ import { VERSION } from './version.js'
 const USAGE = `agentchat ${VERSION} — AgentChat companion CLI for coding agents
 
 Usage:
-  agentchat install                          (detect coding agents, wire the plugin)
-  agentchat register [--email <email> --handle <handle>] [--display-name <name>] [--description <text>]
+  agentchat install                          (detect your coding agent + wire it up)
+  agentchat register [--email <email> --handle <handle>]   (get your @handle)
   agentchat register --code <6-digit-code>
-  agentchat login [--api-key <ac_…>]
-  agentchat recover [--email <email>]        (lost key — rotates it)
+  agentchat login [--api-key <ac_…>]         (already have an account)
+  agentchat recover [--email <email>]        (lost your key — rotates it)
   agentchat recover --code <6-digit-code>
   agentchat status [--json]
   agentchat logout
+  agentchat daemon <install|enable|disable|status|uninstall>   (always-on presence)
   agentchat doctor
-  agentchat daemon <install|enable|disable|status|uninstall> --platform <claude-code|codex>
-  agentchat anchor <install|remove> --platform <claude-code|codex|cursor>
-  agentchat hook <session-start|stop> --platform <claude-code|codex|cursor>
 
-Identity lives in ~/.agentchat/ and is shared by every AgentChat plugin on
-this machine. AGENTCHAT_API_KEY / AGENTCHAT_API_BASE env vars override it.
-Hooks are wired by the plugins — you rarely run them by hand.
+The command detects which coding agent you're on automatically. Only on a
+machine with more than one do you need --platform <claude-code|codex> to point
+at a specific one. Identity is per-agent; AGENTCHAT_API_KEY / AGENTCHAT_API_BASE
+env vars override it. (anchor/hook are wired by the plugin — you don't run them.)
 `
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<number> {
@@ -68,16 +67,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 0
   }
 
-  const requirePlatform = (): ReturnType<typeof resolvePlatform> => resolvePlatform(values.platform)
-
-  // Identity lives per-host: `--platform codex` binds this process to
-  // Codex's scoped home so register/login/status/etc. read and write the
-  // right agent. No flag → the legacy machine-global home (and status/
-  // logout scan all hosts). An explicit AGENTCHAT_HOME still wins inside
-  // bindHostHome.
-  if (values.platform !== undefined && isPlatform(values.platform)) {
-    bindHostHome(values.platform)
-  }
+  // Single-host commands resolve a platform (explicit --platform wins, else the
+  // installed agent is auto-detected) and bind its identity home — so users
+  // never need to type --platform. status/logout deliberately span every host;
+  // hooks are always invoked with an explicit --platform by the plugin wiring.
+  // An explicit AGENTCHAT_HOME still wins inside bindHostHome.
+  const scoped =
+    command === 'register' ||
+    command === 'login' ||
+    command === 'recover' ||
+    command === 'daemon' ||
+    command === 'anchor'
+  const active: Platform | undefined = scoped ? autoPlatform(values.platform) : undefined
+  if (active !== undefined) bindHostHome(active)
 
   switch (command) {
     case 'install':
@@ -91,18 +93,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         ...(values.description !== undefined ? { description: values.description } : {}),
         ...(values.code !== undefined ? { code: values.code } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
-        ...(values.platform !== undefined && isPlatform(values.platform)
-          ? { platform: values.platform }
-          : {}),
+        ...(active !== undefined ? { platform: active } : {}),
       })
 
     case 'login':
       return runLogin({
         ...(values['api-key'] !== undefined ? { apiKey: values['api-key'] } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
-        ...(values.platform !== undefined && isPlatform(values.platform)
-          ? { platform: values.platform }
-          : {}),
+        ...(active !== undefined ? { platform: active } : {}),
       })
 
     case 'recover':
@@ -110,9 +108,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         ...(values.email !== undefined ? { email: values.email } : {}),
         ...(values.code !== undefined ? { code: values.code } : {}),
         ...(values['api-base'] !== undefined ? { apiBase: values['api-base'] } : {}),
-        ...(values.platform !== undefined && isPlatform(values.platform)
-          ? { platform: values.platform }
-          : {}),
+        ...(active !== undefined ? { platform: active } : {}),
       })
 
     case 'status':
@@ -125,23 +121,22 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
       return runDoctor()
 
     case 'daemon': {
-      const platform = requirePlatform()
-      if (platform === null) return 1
-      return runDaemonCmd(subcommand, platform)
+      if (active === undefined) return 1 // unreachable: daemon is a scoped command
+      return runDaemonCmd(subcommand, active)
     }
 
     case 'anchor': {
       if (subcommand !== 'install' && subcommand !== 'remove') {
-        console.error('Usage: agentchat anchor <install|remove> --platform <claude-code|codex|cursor>')
+        console.error('Usage: agentchat anchor <install|remove>')
         return 1
       }
-      const platform = requirePlatform()
-      if (platform === null) return 1
-      return runAnchor(subcommand, platform)
+      if (active === undefined) return 1 // unreachable: anchor is a scoped command
+      return runAnchor(subcommand, active)
     }
 
     case 'hook': {
-      const platform = requirePlatform()
+      // Hooks are always invoked with an explicit --platform by the wiring.
+      const platform = resolvePlatform(values.platform)
       if (platform === null) return 1
       if (subcommand === 'session-start') {
         await runSessionStartHook(platform)

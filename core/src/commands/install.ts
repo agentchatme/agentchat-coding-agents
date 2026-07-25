@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { readCredentialsFileAt } from '../lib/credentials.js'
 import { hostHome } from '../lib/paths.js'
 import { installCodex, codexIdentityHome } from '../lib/codex-config.js'
+import { isPlatform, type Platform } from '../lib/dialect.js'
 
 // ─── agentchat install — the universal front door ───────────────────────────
 //
@@ -64,6 +65,34 @@ export function detectPlatforms(env: NodeJS.ProcessEnv, home: string): PlatformP
   return PROBES.filter(
     (p) => binaryOnPath(p.binary, env) || fs.existsSync(path.join(home, p.configDir)),
   )
+}
+
+/**
+ * Which host a single-agent command (register/login/recover/daemon/anchor) acts
+ * on when the user didn't pass --platform. This is what lets `--platform`
+ * disappear from the everyday flow: an explicit flag still wins, otherwise we
+ * detect the installed agent. Exactly one agent → that one. Several → Claude
+ * Code (the flagship), else the first detected. None → Claude Code as a safe
+ * default (scopes to ~/.claude/agentchat, where the wired MCP reads). Cursor is
+ * excluded — no identity/daemon support yet.
+ */
+export function autoPlatform(
+  explicit: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): Platform {
+  if (explicit !== undefined && isPlatform(explicit)) return explicit
+  const detected = detectPlatforms(env, home)
+    .map((p) => p.key)
+    .filter((k) => k !== 'cursor')
+  if (detected.length === 1) return detected[0]!
+  if (detected.includes('claude-code')) return 'claude-code'
+  return detected[0] ?? 'claude-code'
+}
+
+/** Human label for a platform key (for transparent "…for Claude Code" copy). */
+export function platformLabel(key: Platform): string {
+  return PROBES.find((p) => p.key === key)?.label ?? key
 }
 
 export async function runInstall(deps: InstallDeps = {}): Promise<number> {
@@ -134,24 +163,33 @@ export async function runInstall(deps: InstallDeps = {}): Promise<number> {
     }
   }
 
-  // Each host is its own agent, so report identity per host.
-  const need: string[] = []
+  // Report identity per host — but keep the next step scoped and jargon-free.
+  const need: PlatformProbe[] = []
   const have: string[] = []
   for (const platform of detected) {
     if (platform.key === 'cursor') continue
     const handle = readCredentialsFileAt(hostHome(platform.key))?.handle ?? null
     if (handle) have.push(`${platform.label} → @${handle}`)
-    else need.push(platform.key)
+    else need.push(platform)
   }
   if (have.length > 0) console.log(`\nSigned in: ${have.join(', ')}`)
-  if (need.length > 0) {
+  if (need.length === 1) {
+    // The common case: one agent, one clean instruction, no --platform.
+    const label = need[0]!.label
     console.log(
       [
         '',
-        `Each coding agent gets its OWN handle (so your agents can message each other). Still needed: ${need.join(', ')}.`,
-        'Just open the agent and it will offer to set one up, or register per host:',
-        ...need.map((p) => `  agentchat register --platform ${p} --email <email> --handle <handle>`),
-        '(use a separate email per agent).',
+        `Last step — give ${label} its @handle:`,
+        `  Open ${label} and it will offer to set one up — or run:  agentchat register --email <email> --handle <handle>`,
+      ].join('\n'),
+    )
+  } else if (need.length > 1) {
+    // Multiple agents: the conversational path handles each with no flag.
+    console.log(
+      [
+        '',
+        'Last step — give each agent its @handle (they can then DM each other):',
+        '  Open each agent and it will offer to set one up.',
       ].join('\n'),
     )
   }
