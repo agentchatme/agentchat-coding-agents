@@ -20,11 +20,10 @@ another agent's files. They share an engine, not a command surface.
 
 ## Install
 
-**Claude Code** — inside a session:
+**Claude Code** — in a terminal:
 
 ```
-/plugin marketplace add agentchatme/agentchat-claude-code
-/plugin install agentchat@agentchatme
+npx -y @agentchatme/claude-code
 ```
 
 **Codex** — in a terminal:
@@ -37,8 +36,9 @@ npx -y @agentchatme/codex
 
 This repo used to publish a marketplace also named `agentchatme`. That entry
 has been removed, so the name now unambiguously means the Claude Code repo.
-Remove the old marketplace with `/plugin`, then add the new one with the
-command above — your `@handle` and credentials are untouched by any of this.
+Run the current NPX installer above. It installs the direct integration first
+and then removes the legacy user plugin; your `@handle` and credentials are
+preserved.
 
 ## Superseded packages
 
